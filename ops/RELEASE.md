@@ -52,9 +52,10 @@ safe smoke-status excerpts, and checksum manifests.
 
 ## Staged Smoke Gate
 
-Before creating a release tag or publishing a digest, run the staged smoke suite
-against the TLS front door with real admin credentials and a real restart
-command:
+Run the staged smoke suite against the TLS front door with real admin
+credentials and a real restart command after the prepublish validator has
+already confirmed the legal attestation inputs and before or immediately after
+cutover:
 
 ```bash
 bash ops/smoke_test.sh \
@@ -78,19 +79,35 @@ The smoke script verifies:
 - persistence after the operator-supplied restart command
 
 The script writes temporary campaign/link smoke data, generates a local client
-from `/admin/client.php`, and deletes the temporary records before exit. If the
-staged URL, credentials, restart command, legal approval, immutable digest, or
-tag metadata are missing, stop and report the release as blocked.
+from `/admin/client.php`, and deletes the temporary records before exit. It
+checks runtime behavior only; it does not prove the legal approval attestation,
+git tag provenance, or published digest metadata on its own.
+
+Run the validator separately for the prepublish gate:
+
+```bash
+php ops/validate_release_inputs.php \
+  --phase=prepublish \
+  --git-tag=vX.Y.Z \
+  --git-commit=0123456789abcdef0123456789abcdef01234567 \
+  --git-ref-protected=true
+```
+
+If the staged URL, credentials, or restart command are missing, the staged
+smoke gate cannot run. If the protected legal attestation, immutable tag
+provenance, or published digest metadata are missing, the validator and release
+record must keep the release blocked even if smoke passes.
 
 ## Deployment Sequence
 
-1. Confirm the legal/platform artifact, protected attestation, immutable tag, immutable image digest, and rollback evidence all exist for the exact source commit you intend to release. If any item is absent, the release remains blocked.
+1. Confirm the legal/platform artifact, protected attestation, immutable tag inputs, and rollback evidence all exist for the exact source commit you intend to release, then run `php ops/validate_release_inputs.php --phase=prepublish ...`. If that gate fails, the release remains blocked.
 2. Pull the exact approved image digest.
 3. Start or refresh the private `web` container without publishing its port.
 4. Run `php bin/migrate.php --db=/srv/cloaking/runtime/cloaking.sqlite` inside the new container or a one-shot maintenance container attached to the same private volume.
 5. Reload the TLS edge only after migrations succeed.
 6. Run `bash ops/smoke_test.sh ...` against the staged or freshly cut-over domain and keep its console transcript with the release ticket.
-7. Watch container health, edge logs, and application logs for at least one RTO window after cutover.
+7. Record the published digest, tag, commit, and SBOM metadata in the release artifacts, then run `php ops/validate_release_inputs.php --phase=published ...`.
+8. Watch container health, edge logs, and application logs for at least one RTO window after cutover.
 
 ## Rollback
 

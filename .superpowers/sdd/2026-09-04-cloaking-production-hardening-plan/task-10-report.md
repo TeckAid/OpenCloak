@@ -134,3 +134,68 @@ bash ops/smoke_test.sh \
 Only after that staged smoke run, legal approval attestation, immutable tag,
 and immutable digest metadata are all present should the release move from
 blocked to publishable.
+
+## Fix Round 1
+
+Date: 2026-09-04
+
+Addressed findings:
+
+1. Extended `ops/smoke_test.sh` to accept an explicit staged generated client
+   export via `--client-index-path` plus paired `--assigned-campaign-id` and
+   `--other-campaign-id` inputs, while still generating a deterministic local
+   fixture when those inputs are omitted.
+2. Added client-artifact checks that:
+   - assert the client artifact does not embed the administrator API key
+   - assert the scoped client credential can verify its assigned campaign
+   - assert cross-campaign `/api/verify` calls are rejected
+   - assert management API calls with that client credential are rejected
+3. Strengthened persistence smoke to create and verify:
+   - a custom domain
+   - an assigned campaign with create-state assertions across mutable fields
+   - the same campaign with update-state assertions across mutable fields
+   - a second campaign for cross-campaign credential rejection
+   - a link with create-state assertions across mutable fields
+   - the same link with update-state assertions across mutable fields, including
+     campaign binding and domain clearing
+4. Strengthened restart persistence to re-check the campaign and link edit forms
+   after the operator-supplied restart command, not just name presence.
+5. Corrected `ops/RELEASE.md` so the staged smoke gate is documented as a
+   runtime-behavior check and the legal/tag/digest provenance remains a
+   separate validator gate.
+6. Added `tests/Integration/SmokeScriptContractTest.php` for the smoke-script
+   argument/usage contract.
+
+### Fix Round 1 Verification
+
+Fresh commands run after the round-1 edits:
+
+1. `bash -n ops/smoke_test.sh`
+2. `php tests/run.php`
+3. `rg --files -g '*.php' | xargs -n 1 php -l`
+4. `bash tests/Integration/check_pinned_images.sh`
+5. `bash ops/smoke_test.sh --help`
+6. `bash tests/Integration/web_server_test.sh all`
+
+Results:
+
+- `php tests/run.php` passed, including:
+  - `SmokeScriptContractTest::test_smoke_script_help_mentions_explicit_client_scope_inputs`
+  - `SmokeScriptContractTest::test_smoke_script_rejects_explicit_client_artifact_without_scope_ids`
+- Full PHP lint passed across all tracked PHP files.
+- Digest pinning validation passed.
+- Docker-backed integration checks still skipped with:
+  `SKIP: Docker daemon unavailable; skipping all integration checks.`
+
+### Remaining external blockers after Fix Round 1
+
+The release is still blocked for the same external reasons:
+
+1. `LEGAL_PLATFORM_REVIEW.md` remains pending and no protected attestation was supplied.
+2. No immutable release tag exists for the candidate.
+3. No published image digest or release metadata artifact exists.
+4. No real staged URL, admin credentials, restart command, or explicit staged
+   client artifact were supplied here, so the live staged smoke command still
+   has not been executed against a deployment target.
+5. Docker daemon remains unavailable locally, so containerized deployment-path
+   checks still cannot run in this workspace.
