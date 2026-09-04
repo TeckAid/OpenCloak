@@ -37,27 +37,68 @@ A self-hosted PHP cloaking solution with bot detection, campaigns, multi-domain 
 ### Quick start (Apache / PHP 8+)
 
 1. Copy files to your web root
-2. Ensure `data/` and `logs/` are writable: `chmod 775 data/ logs/`
-3. Set a real admin password (recommended before going live):
+2. Move mutable state out of the deployed app tree or set `APP_RUNTIME_DIR` to a root-owned runtime path such as `/srv/cloaking/runtime`
+3. Ensure the runtime directory and logs are writable by the PHP user only
+4. Set a real admin password (recommended before going live):
    ```bash
    php install.php --username=admin --password='YourStrongPass123!'
    ```
-4. Access the admin panel at `http://yoursite.com/admin/`
+5. Access the admin panel at `http://yoursite.com/admin/`
 
 Default login (only if you skipped `install.php`): `admin` / `admin` — **you will be forced to change it on first login.**
 
 ### Docker
 
 ```bash
+cp ops/config.local.php.example /srv/cloaking/config/config.local.php
 docker compose up -d
 docker compose exec web php install.php --username=admin --password='YourStrongPass123!'
+docker compose exec web php bin/migrate.php --db=/var/www/html/data/cloaking.sqlite
 ```
 
-App runs on `http://localhost:8080`. `data/` and `logs/` are persisted in `./data` and `./logs`.
+The `web` container is private by default. Do not publish port `8080` or `80` from the PHP container directly. Terminate TLS at the edge proxy and attach it to the private app network only.
+
+Recommended host layout on Hetzner:
+
+1. Create `/srv/cloaking/runtime`, `/srv/cloaking/backups`, and `/srv/cloaking/config`
+2. Copy [ops/config.local.php.example](/Users/nasir/Documents/GitHub/Cloaking/ops/config.local.php.example) to `/srv/cloaking/config/config.local.php` and set the real hostname
+3. Bind-mount `/srv/cloaking/runtime` to `/var/www/html/data`, `/srv/cloaking/logs` to `/var/www/html/logs`, and `/srv/cloaking/config/config.local.php` to `/var/www/html/config.local.php`
+4. Expose only the Caddy edge on `80/tcp` and `443/tcp`
+5. Keep the Docker network between Caddy and PHP private
+
+Before every deploy or migration, run:
+
+```bash
+bash ops/backup_sqlite.sh \
+  --db=/srv/cloaking/runtime/cloaking.sqlite \
+  --app-key=/srv/cloaking/runtime/app.key \
+  --config=/srv/cloaking/config/config.local.php \
+  --output=/srv/cloaking/backups/$(date -u +%Y%m%dT%H%M%SZ)
+```
+
+Then rehearse that backup with:
+
+```bash
+bash ops/restore_rehearsal.sh \
+  --backup=/srv/cloaking/backups/20260904T000000Z \
+  --evidence-dir=ops/rehearsals/20260904T000000Z
+```
 
 ### Nginx
 
 Use `nginx.conf` as a template for your server block.
+
+### Hetzner + Caddy
+
+Use [ops/Caddyfile.example](/Users/nasir/Documents/GitHub/Cloaking/ops/Caddyfile.example) as the TLS edge template. On a Hetzner host:
+
+1. Put the PHP app on a private Docker network or bind it to `127.0.0.1:18080`
+2. Configure the Hetzner Firewall to allow inbound `22/tcp`, `80/tcp`, and `443/tcp` only
+3. Point your app hostname and custom short-link hostnames at the server
+4. Start Caddy with the public hostnames already present in DNS so it can request certificates
+5. Reload Caddy after adding each new custom domain so it can complete ACME for that hostname
+
+Custom-domain certificates are not automatic unless the hostname is present in the active Caddy config and already resolves to the server. Add the hostname to Caddy first, confirm DNS, then reload Caddy to mint the certificate before sending traffic.
 
 ### Local development
 
@@ -116,7 +157,7 @@ For custom domains:
 2. At your DNS provider, CNAME `s.example.com` → your server hostname (or A record → server IP)
 3. Make your web server accept the hostname:
    - **Nginx**: one server block per custom domain reusing `nginx.conf`, or a `*.yourdomain.com` wildcard (see comments in the file)
-   - **Caddy/Traefik**: reverse-proxy to the app with automatic HTTPS — recommended for many domains
+   - **Caddy/Traefik**: add the hostname to the edge config, confirm DNS points to the server, then reload the proxy so ACME can issue the certificate
    - **Apache**: add a `ServerAlias` to your vhost
 4. Create links and select the domain — they resolve as `https://s.example.com/slug`
 
@@ -154,18 +195,21 @@ curl -X POST -H "Authorization: Bearer KEY" -H "Content-Type: application/json" 
 
 Edit `config.local.php` (copy `config.local.example.php`) to override:
 
+- `APP_RUNTIME_DIR` — root-owned runtime directory outside the immutable app tree
 - `DB_PATH` — database location
+- `APP_BASE_URL` / `SYSTEM_HOSTS` — canonical app hostname and system-owned short-link hosts
 - `TRUSTED_PROXIES` — proxies allowed to set forwarding headers (Cloudflare etc.)
 - `ENABLE_TOR_CHECK` — toggle Tor DNSBL lookups
 - `LOGIN_MAX_ATTEMPTS` / `LOGIN_WINDOW_SECONDS` — login rate limiting
 - `LOG_RETENTION_DAYS` — hit-log retention (pruned automatically)
 
-Secrets (app key, debug token, admin secret) are generated automatically in `data/app.key` on first run — nothing is hardcoded.
+Secrets (app key, debug token, admin secret) are generated automatically in `APP_RUNTIME_DIR/app.key` on first run unless you set them explicitly.
 
 ## Security notes
 
 - Change the default password immediately (`php install.php`)
 - Serve over HTTPS (admin cookies are Secure-only when HTTPS is detected)
+- Keep `config.local.php`, `app.key`, the SQLite database, and backups out of the public docroot
 - `data/`, `logs/`, and `includes/` are denied by `.htaccess` / `nginx.conf`
 - Never put your API key in URLs — the API only accepts the Authorization header
 - Client-mode API keys live in server-side PHP files only

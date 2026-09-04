@@ -1,0 +1,20 @@
+<?php
+/**
+ * Production-oriented local overrides for a private app container.
+ *
+ * Copy to your deployment host outside the image, then bind-mount it into the
+ * container as /var/www/html/config.local.php. The host runtime directory can
+ * still live at /srv/cloaking/runtime; these paths are the container-visible
+ * mount targets.
+ */
+
+define('APP_RUNTIME_DIR', '/var/www/html/data');
+define('DB_PATH', '/var/www/html/data/cloaking.sqlite');
+define('LOG_PATH', '/var/www/html/logs/');
+define('APP_BASE_URL', 'https://app.example.com');
+define('SYSTEM_HOSTS', [
+    'app.example.com',
+]);
+define('TRUSTED_PROXIES', [
+    '127.0.0.1/32',
+]);

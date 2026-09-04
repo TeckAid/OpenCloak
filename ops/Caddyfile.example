@@ -1,0 +1,24 @@
+{
+    admin off
+    storage file_system {
+        root /var/lib/caddy
+    }
+}
+
+app.example.com, s.example.com {
+    encode zstd gzip
+
+    tls ops@example.com
+
+    reverse_proxy 127.0.0.1:18080
+
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+    }
+}
+
+http:// {
+    redir https://{host}{uri} permanent
+}

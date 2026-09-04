@@ -1,0 +1,12 @@
+{
+    "started_at_utc": "2026-09-04T20:14:04Z",
+    "completed_at_utc": "2026-09-04T20:14:04Z",
+    "port": 53562,
+    "integrity_check": "ok",
+    "migration_exit": 0,
+    "rpo_seconds": 0,
+    "rto_seconds": 0.499,
+    "restored_db_sha256": "3813b774c36b368737eea5c8644823df0084e109d1293641aacec6b8ca0f2dbb",
+    "temp_root": null,
+    "temp_root_cleaned_on_exit": true
+}
