@@ -28,3 +28,18 @@ jobs:
 
       - name: Run tests
         run: php tests/run.php
+
+      - name: Validate Docker Compose
+        run: docker compose config --quiet
+
+      - name: Build production image from clean context
+        run: docker build --pull --file Dockerfile --tag cloaking:${{ github.sha }} .
+
+      - name: Run Apache integration checks
+        run: tests/Integration/web_server_test.sh apache
+
+      - name: Run Nginx integration checks
+        run: tests/Integration/web_server_test.sh nginx
+
+      - name: Run Caddy integration checks
+        run: tests/Integration/web_server_test.sh caddy

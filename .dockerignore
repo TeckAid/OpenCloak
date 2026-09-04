@@ -1,21 +1,25 @@
-# Git
+# VCS and repository metadata
 .git
-.gitignore
+.github
+.superpowers
 
-# Local config with secrets — never bake into images
+# Local configuration and runtime state
 config.local.php
+cloaking-runtime/
+data/
+logs/
 
-# Runtime data
-data
-logs
+# Local-only tests and documents
+tests/**
+!tests/Integration/apache/Dockerfile
+!tests/Integration/nginx/Dockerfile
+docs/
+README.md
+CODE_REVIEW.md
+IMPLEMENTATION_PLAN.md
 
-# Docs
-*.md
-
-# Dev tooling
-dev-router.php
-install.php
-docker-compose.yml
+# Operations and edge fixtures should stay out of the app image
+docker/*
+!docker/php.ini
 Dockerfile
-docker
-nginx.conf
+docker-compose.yml

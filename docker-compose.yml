@@ -1,15 +1,85 @@
 services:
   web:
-    build: .
-    ports:
-      - "8080:80"
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PHP_APACHE_IMAGE: php:8.4-apache-bookworm
+    expose:
+      - "80"
     volumes:
-      - ./data:/var/www/html/data
-      - ./logs:/var/www/html/logs
+      - type: bind
+        source: ./data
+        target: /var/www/html/data
+      - type: bind
+        source: ./logs
+        target: /var/www/html/logs
+      - type: bind
+        source: ${CLOAKING_CONFIG_PATH:-./docker/config.local.php}
+        target: /var/www/html/config.local.php
+        read_only: true
     restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/run/apache2
+      - /var/lock/apache2
+    networks:
+      - app
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost/admin/login.php"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+    pids_limit: 128
+    mem_limit: 512m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  edge:
+    image: caddy:2.10-alpine
+    depends_on:
+      web:
+        condition: service_healthy
+    ports:
+      - "${CLOAKING_HTTP_PORT:-80}:80"
+      - "${CLOAKING_HTTPS_PORT:-443}:443"
+    volumes:
+      - type: bind
+        source: ./docker/Caddyfile
+        target: /etc/caddy/Caddyfile
+        read_only: true
+      - type: volume
+        source: caddy_data
+        target: /data
+      - type: volume
+        source: caddy_config
+        target: /config
+    restart: unless-stopped
+    networks:
+      - app
+      - edge
+    pids_limit: 128
+    mem_limit: 256m
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  app:
+    internal: true
+  edge:
+
+volumes:
+  caddy_data:
+  caddy_config:

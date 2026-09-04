@@ -2,11 +2,17 @@
 Options -Indexes
 DirectoryIndex index.php
 
+<IfModule mod_authz_core.c>
+    <FilesMatch "^(?:config(?:\.local(?:\.example)?)?\.php|install\.php|dev-router\.php|Dockerfile|docker-compose\.yml|nginx\.conf|\.dockerignore|README\.md|CODE_REVIEW\.md|IMPLEMENTATION_PLAN\.md)$">
+        Require all denied
+    </FilesMatch>
+</IfModule>
+
 RewriteEngine On
 
 # ---- Deny sensitive paths (first!) ------------------------------------------
-RewriteRule ^(config\.php|config\.local\.php|config\.local\.example\.php|install\.php|dev-router\.php)$ - [F,L]
-RewriteRule ^(data|logs|includes|\.git)(/|$) - [F,L]
+RewriteRule ^(?:data|logs|includes|docs|docker|tests|\.git|\.github|\.superpowers)(?:/|$) - [F,L,NC]
+RewriteRule ^.+\.(?:sqlite(?:-(?:wal|shm|journal))?|sqlite3|db3?|sql|log)$ - [F,L,NC]
 
 # ---- Admin panel --------------------------------------------------------------
 RewriteRule ^admin/?$ /admin/index.php [L]

@@ -1,0 +1,18 @@
+{
+    admin off
+    storage file_system {
+        root /data
+    }
+}
+
+:80 {
+    @allowed host app.localhost cloaks.localhost
+    redir @allowed https://{host}{uri} permanent
+    respond "unknown host" 421
+}
+
+app.localhost, cloaks.localhost {
+    encode zstd gzip
+    reverse_proxy web:80
+}
+
