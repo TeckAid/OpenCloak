@@ -555,26 +555,28 @@ function owned_row(PDO $db, string $table, int $id, int $userId): ?array
 
 function delete_campaign_safely(PDO $db, int $userId, int $campaignId): ?string
 {
-    $linkCount = referenced_link_count($db, 'campaign_id', $userId, $campaignId);
-    if ($linkCount > 0) {
-        return 'Campaign is still assigned to one or more links.';
-    }
-
-    $db->prepare('DELETE FROM campaigns WHERE id = ? AND user_id = ?')->execute([$campaignId, $userId]);
-
-    return null;
+    return delete_owned_row_without_references(
+        $db,
+        'campaigns',
+        'campaign_id',
+        $userId,
+        $campaignId,
+        'Campaign is still assigned to one or more links.',
+        'Campaign could not be deleted safely while related links are being updated. Please retry.'
+    );
 }
 
 function delete_domain_safely(PDO $db, int $userId, int $domainId): ?string
 {
-    $linkCount = referenced_link_count($db, 'domain_id', $userId, $domainId);
-    if ($linkCount > 0) {
-        return 'Domain is still assigned to one or more links. Reassign those links first.';
-    }
-
-    $db->prepare('DELETE FROM domains WHERE id = ? AND user_id = ?')->execute([$domainId, $userId]);
-
-    return null;
+    return delete_owned_row_without_references(
+        $db,
+        'domains',
+        'domain_id',
+        $userId,
+        $domainId,
+        'Domain is still assigned to one or more links. Reassign those links first.',
+        'Domain could not be deleted safely while related links are being updated. Please retry.'
+    );
 }
 
 function referenced_link_count(PDO $db, string $column, int $userId, int $id): int
@@ -583,6 +585,55 @@ function referenced_link_count(PDO $db, string $column, int $userId, int $id): i
     $stmt->execute([$userId, $id]);
 
     return (int) $stmt->fetchColumn();
+}
+
+function delete_owned_row_without_references(
+    PDO $db,
+    string $table,
+    string $referenceColumn,
+    int $userId,
+    int $rowId,
+    string $referenceMessage,
+    string $lockedMessage
+): ?string {
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+    } catch (Throwable $e) {
+        if (is_sqlite_busy_error($e)) {
+            return $lockedMessage;
+        }
+        throw $e;
+    }
+
+    try {
+        $linkCount = referenced_link_count($db, $referenceColumn, $userId, $rowId);
+        if ($linkCount > 0) {
+            $db->rollBack();
+            return $referenceMessage;
+        }
+
+        $db->prepare("DELETE FROM {$table} WHERE id = ? AND user_id = ?")->execute([$rowId, $userId]);
+        $db->commit();
+
+        return null;
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        if (is_sqlite_busy_error($e)) {
+            return $lockedMessage;
+        }
+        throw $e;
+    }
+}
+
+function is_sqlite_busy_error(Throwable $e): bool
+{
+    $message = strtolower($e->getMessage());
+
+    return strpos($message, 'database is locked') !== false
+        || strpos($message, 'database table is locked') !== false
+        || strpos($message, 'database schema is locked') !== false;
 }
 
 /**
