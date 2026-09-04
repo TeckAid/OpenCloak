@@ -176,6 +176,7 @@ Fresh commands run after the round-1 edits:
 4. `bash tests/Integration/check_pinned_images.sh`
 5. `bash ops/smoke_test.sh --help`
 6. `bash tests/Integration/web_server_test.sh all`
+7. `php ops/validate_release_inputs.php --phase=published` after committing the round-1 fixes
 
 Results:
 
@@ -186,6 +187,12 @@ Results:
 - Digest pinning validation passed.
 - Docker-backed integration checks still skipped with:
   `SKIP: Docker daemon unavailable; skipping all integration checks.`
+- The clean-checkout published-phase validator still failed exactly on the
+  intended external release blockers:
+  - missing `LEGAL_APPROVAL_ATTESTATION`
+  - missing `release-artifacts/release-metadata.json`
+  - pending `LEGAL_PLATFORM_REVIEW.md`
+  - missing explicit tag / commit / protected-ref provenance inputs
 
 ### Remaining external blockers after Fix Round 1
 
