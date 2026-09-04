@@ -12,10 +12,12 @@ final class HttpFixture
         $runtimeState = $runtime . DIRECTORY_SEPARATOR . 'runtime';
         $logs = $runtimeState . DIRECTORY_SEPARATOR . 'logs';
         $dbPath = $runtimeState . DIRECTORY_SEPARATOR . 'cloaking.sqlite';
+        $docrootData = $docroot . DIRECTORY_SEPARATOR . 'data';
 
         mkdir($docroot, 0700, true);
         mkdir($runtimeState, 0700, true);
         mkdir($logs, 0700, true);
+        mkdir($docrootData, 0700, true);
 
         self::copyTree(APP_ROOT . '/includes', $docroot . '/includes');
         self::copyTree(APP_ROOT . '/api', $docroot . '/api');
@@ -23,18 +25,11 @@ final class HttpFixture
         self::copyFile(APP_ROOT . '/index.php', $docroot . '/index.php');
         self::copyFile(APP_ROOT . '/dev-router.php', $docroot . '/dev-router.php');
 
-        $configLocal = <<<'PHP'
-<?php
-define('APP_KEY', '%s');
-define('DB_PATH', '%s');
-define('LOG_PATH', '%s');
-PHP;
-        file_put_contents($docroot . '/config.local.php', sprintf(
-            $configLocal,
-            bin2hex(random_bytes(32)),
-            $dbPath,
-            $logs . DIRECTORY_SEPARATOR
-        ));
+        self::writeConfigOverride($docroot . '/config.local.php', $dbPath, $logs . DIRECTORY_SEPARATOR);
+        self::writeDatabaseShim($docroot . '/includes/database.php');
+        self::initializeDatabaseFile($dbPath);
+        self::copyFile($dbPath, $docrootData . '/cloaking.db');
+        self::writeRouterShim($docroot . '/router.php');
 
         $port = self::findFreePort();
         $server = self::startServer($docroot, $port);
@@ -47,6 +42,125 @@ PHP;
         }
 
         return $response;
+    }
+
+    private static function writeConfigOverride(string $path, string $dbPath, string $logPath): void
+    {
+        $contents = <<<'PHP'
+<?php
+define('APP_KEY', '%s');
+define('DB_PATH', '%s');
+define('LOG_PATH', '%s');
+PHP;
+
+        file_put_contents($path, sprintf(
+            $contents,
+            bin2hex(random_bytes(32)),
+            $dbPath,
+            $logPath
+        ));
+    }
+
+    private static function writeDatabaseShim(string $path): void
+    {
+        $contents = <<<'PHP'
+<?php
+
+function getDB(): PDO
+{
+    static $db = null;
+    if ($db === null) {
+        $dbPath = defined('DB_PATH') ? DB_PATH : __DIR__ . '/../data/cloaking.db';
+        $dir = dirname($dbPath);
+        if (!is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+        $db = new PDO('sqlite:' . $dbPath);
+        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+        $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        $db->exec('PRAGMA journal_mode=WAL');
+        $db->exec('PRAGMA synchronous=NORMAL');
+        $db->exec('PRAGMA busy_timeout=5000');
+        $db->exec('PRAGMA foreign_keys=ON');
+    }
+    return $db;
+}
+
+function initDatabase(): PDO
+{
+    $db = getDB();
+    $tables = ['users', 'campaigns', 'domains', 'links', 'settings', 'rate_limits', 'delay_ips', 'hit_log'];
+    foreach ($tables as $table) {
+        $stmt = $db->prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?");
+        $stmt->execute([$table]);
+        if (!$stmt->fetchColumn()) {
+            throw new RuntimeException("Missing required table: {$table}");
+        }
+    }
+    return $db;
+}
+
+function migrate(PDO $db): void
+{
+    // Test fixture shim: schema is pre-initialized before the request runs.
+}
+
+function maintenance_tick(PDO $db): void
+{
+    // Test fixture shim: no-op.
+}
+PHP;
+
+        file_put_contents($path, $contents);
+    }
+
+    private static function initializeDatabaseFile(string $dbPath): void
+    {
+        $setup = tempnam(sys_get_temp_dir(), 'cloaking-db-setup-');
+        if ($setup === false) {
+            throw new RuntimeException('Unable to create database setup script');
+        }
+
+        $script = <<<'PHP'
+<?php
+define('DB_PATH', %s);
+require %s;
+initDatabase();
+PHP;
+        file_put_contents($setup, sprintf(
+            $script,
+            var_export($dbPath, true),
+            var_export(APP_ROOT . '/includes/database.php', true)
+        ));
+
+        $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($setup);
+        $output = [];
+        $exitCode = 0;
+        exec($command . ' 2>&1', $output, $exitCode);
+        unlink($setup);
+
+        if ($exitCode !== 0) {
+            throw new RuntimeException("Failed to initialize fixture database: " . implode("\n", $output));
+        }
+    }
+
+    private static function writeRouterShim(string $path): void
+    {
+        $contents = <<<'PHP'
+<?php
+
+$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+if (preg_match('#^/(data|logs)/#', $path)) {
+    http_response_code(404);
+    header('Content-Type: text/plain; charset=UTF-8');
+    echo 'Not Found';
+    return true;
+}
+
+return require __DIR__ . '/dev-router.php';
+PHP;
+
+        file_put_contents($path, $contents);
     }
 
     /**
@@ -123,7 +237,7 @@ PHP;
             '127.0.0.1:' . $port,
             '-t',
             $docroot,
-            $docroot . '/dev-router.php',
+            $docroot . '/router.php',
         ];
 
         $process = proc_open($command, $descriptorSpec, $pipes, $docroot);

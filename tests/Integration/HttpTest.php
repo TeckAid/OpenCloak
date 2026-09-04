@@ -24,5 +24,6 @@ final class HttpTest extends TestCase
         $response = HttpFixture::request('GET', '/data/cloaking.db');
 
         $this->assertSame(404, $response['status']);
+        $this->assertSame('Not Found', $response['body']);
     }
 }

@@ -84,3 +84,45 @@ Output: all new test harness PHP files reported `No syntax errors detected`.
 ## Concerns
 
 - None beyond the deliberate use of temp directories and short-lived PHP subprocesses for isolation.
+
+## Fix Round 1
+
+Addressed the two review findings against the first Task 1 baseline.
+
+### What changed
+
+- `tests/fixtures/HttpFixture.php` now initializes the SQLite database in a separate setup subprocess using the real schema code, then serves requests through a temp-docroot shim that only opens and verifies the already-initialized database. The request path itself no longer performs DDL or migration work.
+- `tests/fixtures/HttpFixture.php` now copies a representative `data/cloaking.db` file into the temp docroot and routes `/data/*` through a deny shim, so the security test exercises an actual web deny path instead of a missing-file false positive.
+- `tests/Integration/HttpTest.php` now checks the denied data-path response body as well as the status code.
+
+### Verification
+
+Command:
+
+```bash
+php tests/run.php
+```
+
+Output:
+
+```text
+CredentialsTest::test_fresh_database_is_isolated PASS (459.51ms)
+HttpTest::test_api_without_bearer_is_401 PASS (339.78ms)
+HttpTest::test_data_path_is_not_downloadable PASS (338.42ms)
+HttpTest::test_unknown_slug_is_404 PASS (344.83ms)
+RulesTest::test_parse_os_min_versions_parses_entries PASS (0.04ms)
+RulesTest::test_wildcard_match_list_supports_wildcards PASS (0.02ms)
+SecurityTest::test_harness_reports_failure PASS (0.02ms)
+```
+
+Command:
+
+```bash
+while IFS= read -r file; do php -l "$file"; done < <(rg --files tests | rg '\.php$')
+```
+
+Output: all new test harness PHP files reported `No syntax errors detected`.
+
+### Concerns
+
+- None.
