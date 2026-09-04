@@ -1,0 +1,81 @@
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password TEXT NOT NULL,
+    api_key TEXT UNIQUE,
+    must_change_password INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS campaigns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    is_active INTEGER DEFAULT 1,
+    offer_url TEXT DEFAULT '',
+    white_page TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS domains (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    domain TEXT UNIQUE NOT NULL,
+    is_system INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS links (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    slug TEXT UNIQUE NOT NULL,
+    name TEXT DEFAULT '',
+    offer_url TEXT NOT NULL,
+    white_page TEXT,
+    is_active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS rate_limits (
+    rkey TEXT PRIMARY KEY,
+    count INTEGER DEFAULT 0,
+    reset_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS hit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    link_id INTEGER,
+    ip TEXT,
+    user_agent TEXT,
+    referer TEXT,
+    language TEXT,
+    country TEXT,
+    device_type TEXT,
+    is_bot INTEGER DEFAULT 0,
+    is_vpn INTEGER DEFAULT 0,
+    is_datacenter INTEGER DEFAULT 0,
+    shown_page TEXT DEFAULT 'white',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS delay_ips (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    link_id INTEGER,
+    campaign_id INTEGER,
+    ip_hash TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

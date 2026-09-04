@@ -21,6 +21,7 @@ final class HttpFixture
 
         self::copyTree(APP_ROOT . '/includes', $docroot . '/includes');
         self::copyTree(APP_ROOT . '/api', $docroot . '/api');
+        self::copyTree(APP_ROOT . '/migrations', $docroot . '/migrations');
         self::copyFile(APP_ROOT . '/config.php', $docroot . '/config.php');
         self::copyFile(APP_ROOT . '/index.php', $docroot . '/index.php');
         self::copyFile(APP_ROOT . '/dev-router.php', $docroot . '/dev-router.php');

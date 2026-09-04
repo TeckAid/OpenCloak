@@ -1849,6 +1849,7 @@ final class HttpTest extends TestCase
         $this->copyTree(APP_ROOT . '/api', $docroot . '/api');
         $this->copyTree(APP_ROOT . '/admin', $docroot . '/admin');
         $this->copyTree(APP_ROOT . '/assets', $docroot . '/assets');
+        $this->copyTree(APP_ROOT . '/migrations', $docroot . '/migrations');
         $this->copyFile(APP_ROOT . '/config.php', $docroot . '/config.php');
         $this->copyFile(APP_ROOT . '/index.php', $docroot . '/index.php');
         $this->copyFile(APP_ROOT . '/dev-router.php', $docroot . '/dev-router.php');
