@@ -40,7 +40,8 @@ function app_base_url(): string
         throw new RuntimeException('Invalid APP_BASE_URL configuration.');
     }
 
-    $normalized = $scheme . '://' . $host;
+    $serializedHost = str_contains($host, ':') ? '[' . $host . ']' : $host;
+    $normalized = $scheme . '://' . $serializedHost;
     if (isset($parts['port'])) {
         $port = (int) $parts['port'];
         if ($port <= 0 || $port > 65535) {

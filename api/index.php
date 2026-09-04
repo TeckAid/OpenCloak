@@ -388,10 +388,10 @@ switch ($resource) {
             $campaign = $stmt->fetch();
             if (!$campaign) apiError('Campaign not found.', 404);
 
-            $name = trim((string)($_POST['name'] ?? ''));
+            $name = trim(app_array_get_scalar($_POST, 'name', 255, 'name') ?? '');
             if ($name === '') {
                 $body = json_decode(file_get_contents('php://input'), true);
-                $name = is_array($body) ? trim((string)($body['name'] ?? '')) : '';
+                $name = is_array($body) ? trim(app_array_get_scalar($body, 'name', 255, 'name') ?? '') : '';
             }
             if ($name === '') $name = $campaign['name'] . ' (copy)';
 
@@ -423,7 +423,7 @@ switch ($resource) {
 
         if ($method === 'POST' && $id === null) {
             $input = readJsonBody();
-            $domain = strtolower(trim((string)($input['domain'] ?? '')));
+            $domain = strtolower(trim(app_array_get_scalar($input, 'domain', 255, 'domain') ?? ''));
             if (!preg_match('/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/', $domain)) {
                 apiError('Invalid domain. Use a hostname like s.example.com.', 400);
             }

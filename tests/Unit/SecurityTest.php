@@ -16,6 +16,16 @@ PHP);
         $this->assertSame('https://app.example.com', $value);
     }
 
+    public function test_app_base_url_preserves_bracketed_ipv6_hosts(): void
+    {
+        $value = $this->runSecurityProbe(<<<'PHP'
+define('APP_BASE_URL', 'http://[::1]:8080');
+return app_base_url();
+PHP);
+
+        $this->assertSame('http://[::1]:8080', $value);
+    }
+
     public function test_app_client_ip_ignores_untrusted_forwarded_for(): void
     {
         $value = $this->runSecurityProbe(<<<'PHP'

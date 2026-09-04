@@ -86,3 +86,62 @@ Result:
 ## Concerns
 
 - The new host gate defaults the system host set from `APP_BASE_URL`, so any deployment or local setup using additional intentional hostnames now needs those names listed explicitly in `SYSTEM_HOSTS`.
+
+## Fix round 1
+
+### Findings addressed
+
+- `POST /api/domains` now routes `domain` through `app_array_get_scalar(...)` and returns a controlled `400` for arrays/non-scalars.
+- `POST /api/campaigns/{id}/clone` now routes both form and JSON `name` inputs through `app_array_get_scalar(...)` and returns a controlled `400` for arrays/non-scalars.
+- `app_base_url()` now preserves bracketed IPv6 hosts when rebuilding from `APP_BASE_URL`, so `http://[::1]:8080` remains valid.
+
+### Added focused tests
+
+- `SecurityTest::test_app_base_url_preserves_bracketed_ipv6_hosts`
+- `HttpTest::test_api_rejects_array_clone_name`
+- `HttpTest::test_api_rejects_array_domain_input`
+
+### Focused red run
+
+Command:
+
+```bash
+php -r 'require "tests/bootstrap.php"; require "tests/Unit/SecurityTest.php"; require "tests/Integration/HttpTest.php"; foreach ([new SecurityTest(), new HttpTest()] as $case) { foreach ($case->run() as $result) { $line = get_class($case) . "::" . $result["name"] . " " . ($result["passed"] ? "PASS" : "FAIL"); if (!$result["passed"]) { $line .= " - " . $result["message"]; } echo $line, PHP_EOL; } }'
+```
+
+Observed failures before the fix:
+
+- `SecurityTest::test_app_base_url_preserves_bracketed_ipv6_hosts` failed: expected `http://[::1]:8080`, got `http://::1:8080`
+- `HttpTest::test_api_rejects_array_clone_name` failed with `500`
+- `HttpTest::test_api_rejects_array_domain_input` failed with `500`
+
+### Focused green run
+
+Same command as above.
+
+Result: all `SecurityTest` and `HttpTest` cases passed, including the three new regressions.
+
+### Full lint
+
+Command:
+
+```bash
+rg --files -g '*.php' | xargs -n1 php -l
+```
+
+Result: no syntax errors detected in all PHP files.
+
+### Full test suite
+
+Command:
+
+```bash
+php tests/run.php
+```
+
+Result:
+
+- `CredentialsTest` 1/1 PASS
+- `HttpTest` 10/10 PASS
+- `RulesTest` 2/2 PASS
+- `SecurityTest` 7/7 PASS

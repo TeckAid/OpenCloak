@@ -27,6 +27,52 @@ final class HttpTest extends TestCase
         $this->assertTrue(str_contains($response['body'], 'offer_url must be a valid http(s) URL'));
     }
 
+    public function test_api_rejects_array_clone_name(): void
+    {
+        $response = $this->requestSeeded(
+            'POST',
+            '/api/campaigns/1/clone',
+            static function (PDO $db): void {
+                $db->prepare('UPDATE users SET api_key = ? WHERE username = ?')
+                    ->execute(['test-api-key', 'admin']);
+                $db->prepare("
+                    INSERT INTO campaigns (id, user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay)
+                    VALUES (1, 1, 'Original', 1, 'https://offers.example/original', '', 'white', 403, '302', 0)
+                ")->execute();
+            },
+            [
+                'Authorization' => 'Bearer test-api-key',
+                'Content-Type' => 'application/json',
+            ],
+            json_encode([
+                'name' => ['bad'],
+            ], JSON_UNESCAPED_SLASHES)
+        );
+
+        $this->assertSame(400, $response['status']);
+    }
+
+    public function test_api_rejects_array_domain_input(): void
+    {
+        $response = $this->requestSeeded(
+            'POST',
+            '/api/domains',
+            static function (PDO $db): void {
+                $db->prepare('UPDATE users SET api_key = ? WHERE username = ?')
+                    ->execute(['test-api-key', 'admin']);
+            },
+            [
+                'Authorization' => 'Bearer test-api-key',
+                'Content-Type' => 'application/json',
+            ],
+            json_encode([
+                'domain' => ['bad.example'],
+            ], JSON_UNESCAPED_SLASHES)
+        );
+
+        $this->assertSame(400, $response['status']);
+    }
+
     public function test_api_without_bearer_is_401(): void
     {
         $response = HttpFixture::request('GET', '/api/links');
