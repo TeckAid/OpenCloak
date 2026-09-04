@@ -1,0 +1,17 @@
+# Data and logs
+data/*.db
+data/*.db-wal
+data/*.db-shm
+logs/*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backup
+*.bak
+*.backup

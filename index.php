@@ -1,0 +1,305 @@
+<?php
+/**
+ * Cloaking SaaS - Main Entry Point
+ * Handles all incoming traffic and routes to the appropriate page.
+ */
+
+require_once __DIR__ . '/includes/bootstrap.php';
+boot_app(false); // no session on the public hot path
+
+require_once __DIR__ . '/includes/bot_detector.php';
+require_once __DIR__ . '/includes/rules.php';
+
+$db = getDB();
+
+// ---- Resolve slug -----------------------------------------------------------
+$path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+$slug = basename($path);
+if ($slug === '' || $slug === '/' || $slug === 'index.php') {
+    $slug = isset($_GET['s']) ? (string)$_GET['s'] : '';
+}
+
+// ---- Resolve domain -----------------------------------------------------------
+$host = strtolower((string)(explode(':', $_SERVER['HTTP_HOST'] ?? '')[0]));
+$domainId = null;
+$domainRow = null;
+if ($host !== '') {
+    $stmt = $db->prepare("SELECT * FROM domains WHERE domain = ? AND is_active = 1");
+    $stmt->execute([$host]);
+    $domainRow = $stmt->fetch() ?: null;
+    if ($domainRow) {
+        $domainId = (int)$domainRow['id'];
+    }
+}
+
+// ---- Lookup link (scoped to domain) ---------------------------------------------
+$link = null;
+if ($slug !== '') {
+    if ($domainId !== null) {
+        $stmt = $db->prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 AND domain_id = ?");
+        $stmt->execute([$slug, $domainId]);
+    } else {
+        $stmt = $db->prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 AND domain_id IS NULL");
+        $stmt->execute([$slug]);
+    }
+    $link = $stmt->fetch() ?: null;
+}
+
+// ---- Debug mode (secret-token gated) -------------------------------------------
+if (isset($_GET['_debug']) && is_string($_GET['_debug'])) {
+    $validToken = defined('DEBUG_TOKEN') && hash_equals(DEBUG_TOKEN, $_GET['_debug']);
+    if ($validToken) {
+        $fingerprint = isset($_GET['_fph']) ? fingerprint_decode((string)$_GET['_fph']) : [];
+        $payload = [
+            'slug'       => $slug,
+            'host'       => $host,
+            'domain'     => $domainRow ? $domainRow['domain'] : '(system)',
+            'link_found' => $link !== null,
+            'show_offer' => null,
+            'detection'  => null,
+        ];
+        if ($link !== null) {
+            $rules = effective_rules($db, $link);
+            if ($rules !== null) {
+                $detector = new BotDetector();
+                $eval = $detector->evaluate($rules, $fingerprint, isset($_COOKIE['cvk']));
+                $payload['show_offer'] = $eval['allowed'];
+                $payload['reasons'] = $eval['reasons'];
+                $payload['detection'] = $detector->getResult();
+                $payload['device'] = $detector->getDeviceType();
+                $payload['fingerprint'] = $fingerprint;
+            } else {
+                $payload['reasons'] = ['campaign_inactive'];
+            }
+        }
+        header('Content-Type: application/json');
+        echo json_encode($payload, JSON_PRETTY_PRINT);
+        exit;
+    }
+}
+
+// ---- Unknown slug: 404 with safe page --------------------------------------------
+if ($link === null) {
+    http_response_code(404);
+    echo defined('DEFAULT_WHITE_PAGE') ? DEFAULT_WHITE_PAGE
+         : '<html><body><h1>Not Found</h1></body></html>';
+    exit;
+}
+
+// ---- Effective rules (campaign or link-local) --------------------------------------
+$rules = effective_rules($db, $link);
+if ($rules === null) {
+    $evalResult = ['allowed' => false, 'reasons' => ['campaign_inactive']];
+    $detector = new BotDetector();
+    $detector->detect(['datacenter' => false, 'tor' => false]);
+    $detectionResult = $detector->getResult();
+} else {
+    // ---- Fingerprint handling ---------------------------------------------------
+    $fingerprint = isset($_GET['_fph']) ? fingerprint_decode((string)$_GET['_fph']) : [];
+    $needsFp = !empty($rules['require_screen_info'])
+        || !empty($rules['allowed_resolutions']) || !empty($rules['blocked_resolutions'])
+        || !empty($rules['single_visit_only']);
+    $tokenPresent = isset($_COOKIE['cvk']);
+
+    if ($needsFp && $fingerprint === []) {
+        // Single-visit check happens on the first request (token already present?)
+        if (!empty($rules['single_visit_only']) && $tokenPresent) {
+            $detector = new BotDetector();
+            $detector->detect(['datacenter' => false, 'tor' => false]);
+            $detectionResult = $detector->getResult();
+            $evalResult = ['allowed' => false, 'reasons' => ['already_visited']];
+        } else {
+            // Serve the collection interstitial (JS fingerprint round-trip)
+            $base = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+            $query = $_GET;
+            unset($query['_fph'], $query['_fv'], $query['_debug']);
+            serve_interstitial($base, $query);
+            exit;
+        }
+    } else {
+        $detector = new BotDetector();
+        $evalResult = $detector->evaluate($rules, $fingerprint, $tokenPresent);
+        $detectionResult = $detector->getResult();
+
+        // Delay-start filter: block the first N unique IPs (launch protection).
+        // Runs after the main evaluation; adds its reason when triggered.
+        if (!empty($rules['delay_start']) && $evalResult['allowed']) {
+            $delayReason = delay_start_check(
+                $db,
+                !empty($link['campaign_id']) ? (int)$link['campaign_id'] : (int)$link['id'],
+                !empty($link['campaign_id']),
+                (string)($_SERVER['REMOTE_ADDR'] ?? ''),
+                $rules
+            );
+            if ($delayReason !== '') {
+                $evalResult = ['allowed' => false, 'reasons' => [$delayReason]];
+            }
+        }
+
+        // Issue the visitor token on first completed fingerprint round-trip
+        if ($fingerprint !== [] && isset($_GET['_fv'])) {
+            setcookie('cvk', (string)$_GET['_fv'], [
+                'expires'  => time() + 86400 * 365,
+                'path'     => '/',
+                'secure'   => app_is_https(),
+                'httponly' => true,
+                'samesite' => 'Lax',
+            ]);
+        }
+    }
+}
+
+$showOffer = $evalResult['allowed'];
+
+// ---- Log the hit -------------------------------------------------------------------
+if (defined('LOG_ENABLED') && LOG_ENABLED) {
+    $source = derive_source(
+        (string)($_SERVER['HTTP_REFERER'] ?? ''),
+        (string)($detectionResult['client_type'] ?? ''),
+        isset($_GET['utm_source']) ? (string)$_GET['utm_source'] : ''
+    );
+    $db->prepare("
+        INSERT INTO hit_log (link_id, campaign_id, host, ip, user_agent, referer, language, country,
+                             device_type, os_name, os_version, client_type, source,
+                             is_bot, is_vpn, is_datacenter, shown_page, reject_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ")->execute([
+        (int)$link['id'],
+        !empty($link['campaign_id']) ? (int)$link['campaign_id'] : null,
+        $host,
+        $_SERVER['REMOTE_ADDR'] ?? '',
+        $_SERVER['HTTP_USER_AGENT'] ?? '',
+        $_SERVER['HTTP_REFERER'] ?? '',
+        $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '',
+        $detectionResult['country'] ?? '',
+        $detectionResult['device_type'] ?? '',
+        $detectionResult['os_name'] ?? '',
+        $detectionResult['os_version'] ?? '',
+        $detectionResult['client_type'] ?? '',
+        $source,
+        !empty($detectionResult['is_bot']) ? 1 : 0,
+        !empty($detectionResult['is_vpn']) ? 1 : 0,
+        !empty($detectionResult['is_datacenter']) ? 1 : 0,
+        $showOffer ? 'offer' : 'white',
+        $showOffer ? null : implode(',', $evalResult['reasons']),
+    ]);
+
+    if ($showOffer) {
+        $db->prepare("UPDATE links SET total_hits = total_hits + 1, offer_shows = offer_shows + 1 WHERE id = ?")
+           ->execute([(int)$link['id']]);
+        if (!empty($link['campaign_id'])) {
+            $db->prepare("UPDATE campaigns SET total_hits = total_hits + 1, offer_shows = offer_shows + 1 WHERE id = ?")
+               ->execute([(int)$link['campaign_id']]);
+        }
+    } else {
+        $db->prepare("UPDATE links SET total_hits = total_hits + 1, white_shows = white_shows + 1 WHERE id = ?")
+           ->execute([(int)$link['id']]);
+        if (!empty($link['campaign_id'])) {
+            $db->prepare("UPDATE campaigns SET total_hits = total_hits + 1, white_shows = white_shows + 1 WHERE id = ?")
+               ->execute([(int)$link['campaign_id']]);
+        }
+    }
+
+    maintenance_tick($db);
+}
+
+// ---- Route to offer / white page / error ------------------------------------------------
+if ($showOffer) {
+    $offerUrl = resolve_offer_target(
+        $rules,
+        (string)($detectionResult['country'] ?? ''),
+        (int)($rules['offer_shows'] ?? 0)
+    );
+
+    // Forward original UTM parameters to the offer (reference-script UTM mode)
+    if (!empty($rules['forward_utms'])) {
+        $params = $_GET;
+        unset($params['_fph'], $params['_fv'], $params['_debug'], $params['clid']);
+        if ($params !== []) {
+            $offerUrl .= (strpos($offerUrl, '?') !== false ? '&' : '?') . http_build_query($params);
+        }
+    }
+
+    // No-cache mode: force the browser/proxies to bypass caches
+    if (!empty($rules['no_cache'])) {
+        header('Cache-Control: private, max-age=0, no-cache, no-store, must-revalidate, s-maxage=0');
+        header('Pragma: no-cache');
+        header('Expires: ' . gmdate('D, d M Y H:i:s \G\M\T', time() - 86400));
+    }
+
+    $offerMethod = (string)($rules['offer_method'] ?? 'redirect');
+    $delay = max(0, (int)($rules['redirect_delay'] ?? 0));
+    $redirectType = (string)($rules['redirect_type'] ?? '302');
+
+    if ($offerMethod === 'iframe') {
+        // Full-page iframe (reference-script OFFER_METHOD=iframe)
+        $safeUrl = htmlspecialchars($offerUrl, ENT_QUOTES, 'UTF-8');
+        echo "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\">\n"
+           . "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0\">\n"
+           . "<style>html,body,iframe{margin:0;padding:0;height:100%;width:100%;overflow:hidden}</style>\n"
+           . "</head>\n<body>\n"
+           . "<iframe src=\"{$safeUrl}\" style=\"position:fixed;top:0;left:0;bottom:0;right:0;width:100%;height:100%;border:none\" "
+           . "allowfullscreen=\"allowfullscreen\" webkitallowfullscreen=\"webkitallowfullscreen\" mozallowfullscreen=\"mozallowfullscreen\"></iframe>\n"
+           . "</body>\n</html>";
+        exit;
+    }
+
+    if ($redirectType === 'meta' || $delay > 0) {
+        // Meta-refresh or delayed redirect (client-side)
+        $safeUrl = htmlspecialchars($offerUrl, ENT_QUOTES, 'UTF-8');
+        echo "<!DOCTYPE html>\n<html>\n<head>\n"
+           . "<meta charset=\"UTF-8\">\n"
+           . "<meta http-equiv=\"refresh\" content=\"{$delay};url={$safeUrl}\">\n"
+           . "<script>setTimeout(function(){window.location.href="
+           . json_encode($offerUrl) . ";}, {$delay}000);</script>\n"
+           . "</head>\n<body style=\"font-family:sans-serif;text-align:center;padding:4rem\">\n"
+           . "<p>Redirecting…</p>\n</body>\n</html>";
+        exit;
+    }
+
+    if (!is_valid_offer_url($offerUrl)) {
+        // Invalid final URL: fall through to white page rather than emit a bad header
+        $showOffer = false;
+    } else {
+        header('Location: ' . $offerUrl, true, $redirectType === '301' ? 301 : 302);
+        exit;
+    }
+}
+
+// ---- White page / error action -----------------------------------------------------------
+$rejectMode = (string)($rules['reject_mode'] ?? 'white');
+if ($rejectMode === 'error') {
+    $code = in_array((int)($rules['reject_code'] ?? 403), [400, 403, 404, 410, 429, 451], true)
+        ? (int)$rules['reject_code'] : 403;
+    http_response_code($code);
+    echo '<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:4rem">'
+       . '<h1>' . $code . '</h1><p>Access denied.</p></body></html>';
+    exit;
+}
+
+if (!empty($rules['white_page'])) {
+    echo $rules['white_page'];
+} else {
+    echo defined('DEFAULT_WHITE_PAGE') ? DEFAULT_WHITE_PAGE
+         : '<html><body><h1>Page Not Found</h1></body></html>';
+}
+exit;
+
+/**
+ * Minimal interstitial page that collects a fingerprint via JS and
+ * re-requests the same URL with the payload attached.
+ */
+function serve_interstitial(string $path, array $query): void
+{
+    $qs = http_build_query($query);
+    $redirect = $path . ($qs !== '' ? '?' . $qs : '');
+    $fpConfig = json_encode(['redirect' => $redirect], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+    echo "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\">\n"
+       . "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+       . "<title>Loading…</title>\n"
+       . "<script>window.__CLOAK_CFG__ = {$fpConfig};</script>\n"
+       . "<script src=\"/assets/js/tracker.js\"></script>\n"
+       . "</head>\n<body style=\"font-family:sans-serif;text-align:center;padding:4rem\">\n"
+       . "<p>Please wait…</p>\n</body>\n</html>";
+    exit;
+}

@@ -1,0 +1,21 @@
+# Git
+.git
+.gitignore
+
+# Local config with secrets — never bake into images
+config.local.php
+
+# Runtime data
+data
+logs
+
+# Docs
+*.md
+
+# Dev tooling
+dev-router.php
+install.php
+docker-compose.yml
+Dockerfile
+docker
+nginx.conf

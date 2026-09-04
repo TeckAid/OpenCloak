@@ -1,0 +1,15 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8080:80"
+    volumes:
+      - ./data:/var/www/html/data
+      - ./logs:/var/www/html/logs
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost/admin/login.php"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s

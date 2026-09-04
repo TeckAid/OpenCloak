@@ -1,0 +1,38 @@
+# Cloaking SaaS - Apache configuration
+Options -Indexes
+DirectoryIndex index.php
+
+RewriteEngine On
+
+# ---- Deny sensitive paths (first!) ------------------------------------------
+RewriteRule ^(config\.php|config\.local\.php|config\.local\.example\.php|install\.php|dev-router\.php)$ - [F,L]
+RewriteRule ^(data|logs|includes|\.git)(/|$) - [F,L]
+
+# ---- Admin panel --------------------------------------------------------------
+RewriteRule ^admin/?$ /admin/index.php [L]
+
+# ---- API ------------------------------------------------------------------------
+RewriteRule ^api(/.*)?$ /api/index.php [L]
+
+# ---- Static assets (pass through) ------------------------------------------------
+RewriteRule ^assets(/.*)?$ - [L]
+
+# ---- Cloaked links (single slug segment) ------------------------------------------
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^([a-zA-Z0-9_-]+)/?$ /index.php [QSA,L]
+
+# ---- Caching -----------------------------------------------------------------------
+<IfModule mod_expires.c>
+    ExpiresActive On
+    ExpiresByType text/css "access plus 30 days"
+    ExpiresByType application/javascript "access plus 30 days"
+    ExpiresByType image/png "access plus 30 days"
+    ExpiresByType image/jpeg "access plus 30 days"
+    ExpiresByType image/svg+xml "access plus 30 days"
+    ExpiresByType image/x-icon "access plus 30 days"
+</IfModule>
+
+<IfModule mod_headers.c>
+    Header unset X-Powered-By
+</IfModule>

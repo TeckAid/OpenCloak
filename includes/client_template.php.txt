@@ -1,0 +1,144 @@
+<?php
+/**
+ * Cloaking SaaS - Client (upload to YOUR landing server)
+ *
+ * Configured values are embedded below. Keep this file server-side only.
+ */
+
+define('CLOAK_API_KEY', '{{API_KEY}}');
+define('CLOAK_CAMPAIGN_ID', '{{CAMPAIGN_ID}}');
+define('CLOAK_VERIFY_URL', '{{VERIFY_URL}}');
+
+function cloak_verify(array $fingerprint, bool $tokenPresent): array
+{
+    $params = $_GET;
+    unset($params['_fph'], $params['_fv'], $params['_debug']);
+
+    $body = json_encode([
+        'campaign_id'   => CLOAK_CAMPAIGN_ID,
+        'ip'            => $_SERVER['REMOTE_ADDR'] ?? '',
+        'user_agent'    => $_SERVER['HTTP_USER_AGENT'] ?? '',
+        'referer'       => $_SERVER['HTTP_REFERER'] ?? '',
+        'language'      => $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '',
+        'accept'        => $_SERVER['HTTP_ACCEPT'] ?? '',
+        'host'          => $_SERVER['HTTP_HOST'] ?? '',
+        'params'        => $params,
+        'fingerprint'   => $fingerprint,
+        'token_present' => $tokenPresent,
+    ]);
+
+    $ctx = stream_context_create(['http' => [
+        'method'        => 'POST',
+        'header'        => "Content-Type: application/json\r\nAuthorization: Bearer " . CLOAK_API_KEY . "\r\n",
+        'content'       => $body,
+        'timeout'       => 5,
+        'ignore_errors' => true,
+    ]]);
+
+    $res = @file_get_contents(CLOAK_VERIFY_URL, false, $ctx);
+    if ($res === false) {
+        http_response_code(503);
+        exit('<!DOCTYPE html><html><body>Service unavailable</body></html>');
+    }
+    $data = json_decode($res, true);
+    return is_array($data) ? $data : [];
+}
+
+// ---- Read fingerprint payload from the tracker round-trip ----------------------
+$fph = (string)($_GET['_fph'] ?? '');
+$fv  = (string)($_GET['_fv'] ?? '');
+$fingerprint = [];
+if ($fph !== '') {
+    $raw = base64_decode(strtr($fph, '-_', '+/'));
+    $decoded = json_decode($raw, true);
+    $fingerprint = is_array($decoded) ? $decoded : [];
+}
+$tokenPresent = ($fv !== '' && isset($_COOKIE['clk']) && $_COOKIE['clk'] === $fv);
+
+$resp = cloak_verify($fingerprint, $tokenPresent);
+
+// ---- The server needs fingerprint data: run one JS round-trip ------------------
+if (!empty($resp['fingerprint_required'])) {
+    $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+    $query = $_GET;
+    unset($query['_fph'], $query['_fv'], $query['_debug']);
+    $qs = http_build_query($query);
+    $redirect = $path . ($qs !== '' ? '?' . $qs : '');
+    $cfg = json_encode(['redirect' => $redirect], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+    echo "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\">\n"
+       . "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+       . "<title>Loading…</title>\n"
+       . "<script>window.__CLOAK_CFG__ = {$cfg};</script>\n"
+       . "<script src=\"tracker.min.js\"></script>\n"
+       . "</head>\n<body style=\"font-family:sans-serif;text-align:center;padding:4rem\">\n"
+       . "<p>Please wait…</p>\n</body>\n</html>";
+    exit;
+}
+
+// ---- Allowed: issue the visitor token, then redirect or show the money page ----
+if (!empty($resp['allowed'])) {
+    if ($fv !== '') {
+        setcookie('clk', $fv, ['expires' => time() + 86400 * 365, 'path' => '/', 'httponly' => true, 'samesite' => 'Lax']);
+    }
+    $target = (string)($resp['pass_target'] ?? '');
+
+    // Forward original UTM parameters (when the campaign asks for it)
+    if (!empty($resp['forward_utms'])) {
+        $params = $_GET;
+        unset($params['_fph'], $params['_fv'], $params['_debug']);
+        if ($params !== []) {
+            $target .= (strpos($target, '?') !== false ? '&' : '?') . http_build_query($params);
+        }
+    }
+
+    if ($target === '' || preg_match('#^https?://#i', $target)) {
+        $redirectType = (string)($resp['redirect_type'] ?? '302');
+        $delay = (int)($resp['redirect_delay'] ?? 0);
+
+        if (($resp['offer_method'] ?? 'redirect') === 'iframe') {
+            $safe = htmlspecialchars($target, ENT_QUOTES, 'UTF-8');
+            echo "<!DOCTYPE html><html><head><meta charset=\"UTF-8\">"
+               . "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0\">"
+               . "<style>html,body,iframe{margin:0;padding:0;height:100%;width:100%;overflow:hidden}</style></head><body>"
+               . "<iframe src=\"{$safe}\" style=\"position:fixed;top:0;left:0;bottom:0;right:0;width:100%;height:100%;border:none\" allowfullscreen></iframe>"
+               . "</body></html>";
+            exit;
+        }
+
+        if ($delay > 0) {
+            $safe = htmlspecialchars($target, ENT_QUOTES, 'UTF-8');
+            echo "<!DOCTYPE html><html><head><meta http-equiv=\"refresh\" content=\"{$delay};url={$safe}\"></head>"
+               . "<body><p>Redirecting…</p></body></html>";
+            exit;
+        }
+        header('Location: ' . $target, true, $redirectType === '301' ? 301 : 302);
+        exit;
+    }
+    // Money page = local file (e.g. page.html) in this directory
+    $file = __DIR__ . '/' . basename($target);
+    if (is_file($file)) {
+        readfile($file);
+        exit;
+    }
+    http_response_code(404);
+    exit('<!DOCTYPE html><html><body>Page file missing: ' . htmlspecialchars($target) . '</body></html>');
+}
+
+// ---- Denied ----------------------------------------------------------------
+$rejectMode = (string)($resp['reject_mode'] ?? 'white');
+if ($rejectMode === 'error') {
+    $code = (int)($resp['reject_code'] ?? 403);
+    http_response_code(in_array($code, [400, 403, 404, 410, 429, 451], true) ? $code : 403);
+    exit;
+}
+$rejectTarget = (string)($resp['reject_target'] ?? '');
+if (preg_match('#^https?://#i', $rejectTarget)) {
+    header('Location: ' . $rejectTarget, true, 302);
+    exit;
+}
+if ($rejectTarget !== '') {
+    echo $rejectTarget;
+    exit;
+}
+http_response_code(404);
+exit;
