@@ -8,6 +8,7 @@ This release workflow assumes the app runs behind a TLS terminator such as Caddy
 2. Confirm `config.local.php`, `app.key`, `cloaking.sqlite`, and log directories live in a root-owned deployment directory with the runtime subdirectories writable only by the PHP service account.
 3. Confirm the Hetzner Firewall exposes only `22/tcp`, `80/tcp`, and `443/tcp` to the internet. Do not publish the PHP container port.
 4. Keep the previous image digest, the latest verified backup, and the latest successful restore rehearsal together so rollback can happen without guessing.
+5. Keep the release blocked until `LEGAL_PLATFORM_REVIEW.md` has an authorized external decision plus a protected `LEGAL_APPROVAL_ATTESTATION`, and until immutable tag/digest metadata exists for the exact commit being released.
 
 ## Pre-Deploy Backup
 
@@ -49,17 +50,47 @@ Do not commit raw backup artifacts, SQLite files, app keys, or reusable runtime
 config into version control. Commit only redacted evidence such as summaries,
 safe smoke-status excerpts, and checksum manifests.
 
+## Staged Smoke Gate
+
+Before creating a release tag or publishing a digest, run the staged smoke suite
+against the TLS front door with real admin credentials and a real restart
+command:
+
+```bash
+bash ops/smoke_test.sh \
+  --https-base-url=https://app.example.com \
+  --http-base-url=http://app.example.com \
+  --admin-username=owner \
+  --admin-password='replace-me' \
+  --restart-command='docker compose restart web edge'
+```
+
+The smoke script verifies:
+
+- HTTP to HTTPS redirect
+- Secure `cloaksess` cookie plus admin auth and CSRF rejection
+- `401` for `/api/links` without `Authorization`
+- denial of runtime/config/source files
+- `421` rejection for an unknown `Host`
+- parity between a direct cloaked link and a generated client running locally against the staged `/api/verify`
+- campaign creation/update persistence
+- dashboard visibility for client verify hits
+- persistence after the operator-supplied restart command
+
+The script writes temporary campaign/link smoke data, generates a local client
+from `/admin/client.php`, and deletes the temporary records before exit. If the
+staged URL, credentials, restart command, legal approval, immutable digest, or
+tag metadata are missing, stop and report the release as blocked.
+
 ## Deployment Sequence
 
-1. Pull the exact approved image digest.
-2. Start or refresh the private `web` container without publishing its port.
-3. Run `php bin/migrate.php --db=/srv/cloaking/runtime/cloaking.sqlite` inside the new container or a one-shot maintenance container attached to the same private volume.
-4. Reload the TLS edge only after migrations succeed.
-5. Run smoke checks against the live domain:
-   - `GET /admin/login.php` returns `200`
-   - `GET /api/links` without `Authorization` returns `401`
-   - A known active short link returns the expected redirect or safe page
-6. Watch container health, edge logs, and application logs for at least one RTO window after cutover.
+1. Confirm the legal/platform artifact, protected attestation, immutable tag, immutable image digest, and rollback evidence all exist for the exact source commit you intend to release. If any item is absent, the release remains blocked.
+2. Pull the exact approved image digest.
+3. Start or refresh the private `web` container without publishing its port.
+4. Run `php bin/migrate.php --db=/srv/cloaking/runtime/cloaking.sqlite` inside the new container or a one-shot maintenance container attached to the same private volume.
+5. Reload the TLS edge only after migrations succeed.
+6. Run `bash ops/smoke_test.sh ...` against the staged or freshly cut-over domain and keep its console transcript with the release ticket.
+7. Watch container health, edge logs, and application logs for at least one RTO window after cutover.
 
 ## Rollback
 
