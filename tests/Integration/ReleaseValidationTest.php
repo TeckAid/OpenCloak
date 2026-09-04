@@ -9,9 +9,16 @@ final class ReleaseValidationTest extends TestCase
         $fixture = $this->createReleaseFixture();
 
         try {
+            $release = $this->prepareApprovedTaggedRelease($fixture);
             file_put_contents($fixture['repo'] . '/README.md', "dirty working tree\n", FILE_APPEND);
 
-            $result = $this->runValidator($fixture);
+            $result = $this->runValidator($fixture, [
+                '--phase=prepublish',
+                '--git-tag=' . $release['tag'],
+                '--git-commit=' . $release['commit'],
+                '--git-ref-protected=true',
+                '--legal-approval-attestation=' . $release['attestation'],
+            ]);
 
             $this->assertSame(1, $result['exit']);
             $this->assertTrue(
@@ -23,50 +30,83 @@ final class ReleaseValidationTest extends TestCase
         }
     }
 
-    public function test_release_validator_rejects_pending_legal_review(): void
+    public function test_release_validator_rejects_pending_legal_review_even_with_attestation(): void
     {
         $fixture = $this->createReleaseFixture();
 
         try {
-            $result = $this->runValidator($fixture);
+            $tag = 'v1.2.3';
+            $commit = $this->gitOutput($fixture['repo'], ['git', 'rev-parse', 'HEAD']);
+            $this->runProcess(['git', 'tag', $tag, $commit], $fixture['repo']);
+            $pendingAttestation = $this->buildAttestation($fixture['legalPath'], 'External Reviewer');
+
+            $result = $this->runValidator($fixture, [
+                '--phase=prepublish',
+                '--git-tag=' . $tag,
+                '--git-commit=' . $commit,
+                '--git-ref-protected=true',
+                '--legal-approval-attestation=' . $pendingAttestation,
+            ]);
 
             $this->assertSame(1, $result['exit']);
             $this->assertTrue(
-                str_contains($result['stderr'] . $result['stdout'], 'LEGAL_PLATFORM_REVIEW.md'),
-                'Validator should reject a pending legal/platform review record.'
+                str_contains($result['stderr'] . $result['stdout'], 'LEGAL_PLATFORM_REVIEW.md has not been completed'),
+                'Validator should reject a pending legal/platform review record even if an attestation is injected.'
             );
         } finally {
             $this->deleteTree($fixture['root']);
         }
     }
 
-    public function test_release_validator_rejects_mutable_image_references(): void
+    public function test_release_validator_rejects_self_authored_approval_without_attestation(): void
     {
         $fixture = $this->createReleaseFixture();
 
         try {
-            file_put_contents($fixture['metadataPath'], json_encode([
-                'git' => [
-                    'tag' => 'v1.2.3',
-                    'commit' => str_repeat('a', 40),
-                    'protected' => true,
-                ],
-                'image' => [
-                    'ref' => 'ghcr.io/example/cloaking:v1.2.3',
-                    'digest' => 'sha256:' . str_repeat('b', 64),
-                ],
-                'sbom' => [
-                    'path' => 'release-artifacts/sbom.spdx.json',
-                ],
-            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
-            $this->commitAll($fixture['repo'], 'Use mutable image reference in metadata');
+            $release = $this->prepareApprovedTaggedRelease($fixture);
 
-            $result = $this->runValidator($fixture);
+            $result = $this->runValidator($fixture, [
+                '--phase=prepublish',
+                '--git-tag=' . $release['tag'],
+                '--git-commit=' . $release['commit'],
+                '--git-ref-protected=true',
+            ]);
 
             $this->assertSame(1, $result['exit']);
             $this->assertTrue(
-                str_contains($result['stderr'] . $result['stdout'], 'immutable sha256 digest'),
-                'Validator should reject mutable image references.'
+                str_contains($result['stderr'] . $result['stdout'], 'LEGAL_APPROVAL_ATTESTATION'),
+                'Validator should require an injected legal approval attestation.'
+            );
+        } finally {
+            $this->deleteTree($fixture['root']);
+        }
+    }
+
+    public function test_release_validator_rejects_mismatched_legal_attestation_digest(): void
+    {
+        $fixture = $this->createReleaseFixture();
+
+        try {
+            $release = $this->prepareApprovedTaggedRelease($fixture);
+            $attestation = json_encode([
+                'authorized_by' => 'Protected Legal Environment',
+                'decision' => 'approved',
+                'review_sha256' => str_repeat('c', 64),
+                'issued_at' => '2026-09-04T20:00:00Z',
+            ], JSON_UNESCAPED_SLASHES);
+
+            $result = $this->runValidator($fixture, [
+                '--phase=prepublish',
+                '--git-tag=' . $release['tag'],
+                '--git-commit=' . $release['commit'],
+                '--git-ref-protected=true',
+                '--legal-approval-attestation=' . $attestation,
+            ]);
+
+            $this->assertSame(1, $result['exit']);
+            $this->assertTrue(
+                str_contains($result['stderr'] . $result['stdout'], 'review artifact digest'),
+                'Validator should reject an attestation whose digest does not match the review artifact.'
             );
         } finally {
             $this->deleteTree($fixture['root']);
@@ -78,19 +118,12 @@ final class ReleaseValidationTest extends TestCase
         $fixture = $this->createReleaseFixture();
 
         try {
-            file_put_contents($fixture['legalPath'], <<<MD
-# Legal Platform Review
+            $release = $this->prepareApprovedTaggedRelease($fixture);
 
-Authorized Reviewer: Alex Counsel
-Scope: Meta, Google, TikTok review status for release v1.2.3
-Decision: approved
-Evidence: Ticket LEG-123 with platform screenshots
-Decision Date: 2026-09-04
-MD
-            );
-            $this->commitAll($fixture['repo'], 'Approve legal review without metadata');
-
-            $result = $this->runValidator($fixture);
+            $result = $this->runValidator($fixture, [
+                '--phase=published',
+                '--legal-approval-attestation=' . $release['attestation'],
+            ]);
 
             $this->assertSame(1, $result['exit']);
             $this->assertTrue(
@@ -102,44 +135,105 @@ MD
         }
     }
 
-    public function test_release_validator_accepts_clean_approved_digest_pinned_release_inputs(): void
+    public function test_release_validator_rejects_mutable_image_references(): void
     {
         $fixture = $this->createReleaseFixture();
 
         try {
-            file_put_contents($fixture['legalPath'], <<<MD
-# Legal Platform Review
+            $release = $this->prepareApprovedTaggedRelease($fixture);
+            $this->writeMetadata($fixture, $release['tag'], $release['commit'], [
+                'ref' => 'ghcr.io/example/cloaking:' . $release['tag'],
+                'digest' => 'sha256:' . str_repeat('b', 64),
+            ]);
 
-Authorized Reviewer: Alex Counsel
-Scope: Meta, Google, TikTok review status for release v1.2.3
-Decision: approved
-Evidence: Ticket LEG-123 with platform screenshots
-Decision Date: 2026-09-04
-MD
+            $result = $this->runValidator($fixture, [
+                '--phase=published',
+                '--legal-approval-attestation=' . $release['attestation'],
+            ]);
+
+            $this->assertSame(1, $result['exit']);
+            $this->assertTrue(
+                str_contains($result['stderr'] . $result['stdout'], 'immutable sha256 digest'),
+                'Validator should reject mutable image references.'
             );
-            file_put_contents($fixture['metadataPath'], json_encode([
-                'git' => [
-                    'tag' => 'v1.2.3',
-                    'commit' => str_repeat('a', 40),
-                    'protected' => true,
-                ],
-                'image' => [
-                    'ref' => 'ghcr.io/example/cloaking:v1.2.3@sha256:' . str_repeat('b', 64),
-                    'digest' => 'sha256:' . str_repeat('b', 64),
-                ],
-                'sbom' => [
-                    'path' => 'release-artifacts/sbom.spdx.json',
-                ],
-            ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
-            file_put_contents($fixture['repo'] . '/release-artifacts/sbom.spdx.json', "{\"spdxVersion\":\"SPDX-2.3\"}\n");
-            $this->commitAll($fixture['repo'], 'Approve legal review and add release metadata');
+        } finally {
+            $this->deleteTree($fixture['root']);
+        }
+    }
 
-            $result = $this->runValidator($fixture);
+    public function test_release_validator_rejects_tag_that_does_not_point_at_claimed_release_commit(): void
+    {
+        $fixture = $this->createReleaseFixture();
+
+        try {
+            $release = $this->prepareApprovedTaggedRelease($fixture);
+            file_put_contents($fixture['repo'] . '/README.md', "# Fixture\nrelease moved\n");
+            $this->commitAll($fixture['repo'], 'Advance head after tagging');
+            $headCommit = $this->gitOutput($fixture['repo'], ['git', 'rev-parse', 'HEAD']);
+
+            $result = $this->runValidator($fixture, [
+                '--phase=prepublish',
+                '--git-tag=' . $release['tag'],
+                '--git-commit=' . $headCommit,
+                '--git-ref-protected=true',
+                '--legal-approval-attestation=' . $this->buildAttestation($fixture['legalPath'], 'Protected Legal Environment'),
+            ]);
+
+            $this->assertSame(1, $result['exit']);
+            $this->assertTrue(
+                str_contains($result['stderr'] . $result['stdout'], 'does not point at the claimed release commit'),
+                'Validator should reject tags that do not resolve to the claimed release commit.'
+            );
+        } finally {
+            $this->deleteTree($fixture['root']);
+        }
+    }
+
+    public function test_release_validator_accepts_prepublish_gate_only_with_injected_attestation(): void
+    {
+        $fixture = $this->createReleaseFixture();
+
+        try {
+            $release = $this->prepareApprovedTaggedRelease($fixture);
+
+            $result = $this->runValidator($fixture, [
+                '--phase=prepublish',
+                '--git-tag=' . $release['tag'],
+                '--git-commit=' . $release['commit'],
+                '--git-ref-protected=true',
+                '--legal-approval-attestation=' . $release['attestation'],
+            ]);
 
             $this->assertSame(0, $result['exit'], $result['stderr'] . $result['stdout']);
             $this->assertTrue(
                 str_contains($result['stdout'], 'PASS'),
-                'Validator should accept clean, approved, digest-pinned release inputs.'
+                'Validator should accept a prepublish gate only when the approval attestation is injected.'
+            );
+        } finally {
+            $this->deleteTree($fixture['root']);
+        }
+    }
+
+    public function test_release_validator_accepts_published_inputs_with_real_tag_commit_and_attestation(): void
+    {
+        $fixture = $this->createReleaseFixture();
+
+        try {
+            $release = $this->prepareApprovedTaggedRelease($fixture);
+            $this->writeMetadata($fixture, $release['tag'], $release['commit'], [
+                'ref' => 'ghcr.io/example/cloaking:' . $release['tag'] . '@sha256:' . str_repeat('b', 64),
+                'digest' => 'sha256:' . str_repeat('b', 64),
+            ]);
+
+            $result = $this->runValidator($fixture, [
+                '--phase=published',
+                '--legal-approval-attestation=' . $release['attestation'],
+            ]);
+
+            $this->assertSame(0, $result['exit'], $result['stderr'] . $result['stdout']);
+            $this->assertTrue(
+                str_contains($result['stdout'], 'PASS'),
+                'Validator should accept published inputs only when the attestation and real tag/commit provenance match.'
             );
         } finally {
             $this->deleteTree($fixture['root']);
@@ -147,19 +241,20 @@ MD
     }
 
     /**
-     * @return array{root:string,repo:string,legalPath:string,metadataPath:string}
+     * @return array{root:string,repo:string,legalPath:string,metadataPath:string,sbomPath:string}
      */
     private function createReleaseFixture(): array
     {
         $root = $this->tempDir('cloaking-release-');
         $repo = $root . DIRECTORY_SEPARATOR . 'repo';
+        $artifacts = $root . DIRECTORY_SEPARATOR . 'release-artifacts';
         mkdir($repo, 0700, true);
-        mkdir($repo . '/ops', 0700, true);
-        mkdir($repo . '/release-artifacts', 0700, true);
+        mkdir($artifacts, 0700, true);
 
         file_put_contents($repo . '/README.md', "# Fixture\n");
         $legalPath = $repo . '/LEGAL_PLATFORM_REVIEW.md';
-        $metadataPath = $repo . '/release-artifacts/release-metadata.json';
+        $metadataPath = $artifacts . '/release-metadata.json';
+        $sbomPath = $artifacts . '/sbom.spdx.json';
 
         file_put_contents($legalPath, <<<MD
 # Legal Platform Review
@@ -182,22 +277,108 @@ MD
             'repo' => $repo,
             'legalPath' => $legalPath,
             'metadataPath' => $metadataPath,
+            'sbomPath' => $sbomPath,
         ];
     }
 
     /**
+     * @param array{repo:string,legalPath:string} $fixture
+     * @return array{tag:string,commit:string,attestation:string}
+     */
+    private function prepareApprovedTaggedRelease(array $fixture): array
+    {
+        file_put_contents($fixture['legalPath'], <<<MD
+# Legal Platform Review
+
+Authorized Reviewer: Alex Counsel
+Scope: Meta, Google, TikTok review status for release v1.2.3
+Decision: approved
+Evidence: Ticket LEG-123 with platform screenshots
+Decision Date: 2026-09-04
+MD
+        );
+        $this->commitAll($fixture['repo'], 'Record approved legal review fixture');
+
+        $tag = 'v1.2.3';
+        $commit = $this->gitOutput($fixture['repo'], ['git', 'rev-parse', 'HEAD']);
+        $tagResult = $this->runProcess(['git', 'tag', $tag, $commit], $fixture['repo']);
+        if ($tagResult['exit'] !== 0) {
+            throw new RuntimeException('Failed to create release tag: ' . $tagResult['stderr'] . $tagResult['stdout']);
+        }
+
+        return [
+            'tag' => $tag,
+            'commit' => $commit,
+            'attestation' => $this->buildAttestation($fixture['legalPath'], 'Protected Legal Environment'),
+        ];
+    }
+
+    /**
+     * @param array{metadataPath:string,sbomPath:string} $fixture
+     * @param array{ref:string,digest:string} $image
+     */
+    private function writeMetadata(array $fixture, string $tag, string $commit, array $image): void
+    {
+        file_put_contents($fixture['sbomPath'], "{\"spdxVersion\":\"SPDX-2.3\"}\n");
+        file_put_contents($fixture['metadataPath'], json_encode([
+            'git' => [
+                'tag' => $tag,
+                'commit' => $commit,
+                'protected' => true,
+            ],
+            'image' => [
+                'ref' => $image['ref'],
+                'digest' => $image['digest'],
+            ],
+            'sbom' => [
+                'path' => $fixture['sbomPath'],
+            ],
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+    }
+
+    private function buildAttestation(string $legalPath, string $authorizedBy): string
+    {
+        $attestation = json_encode([
+            'authorized_by' => $authorizedBy,
+            'decision' => 'approved',
+            'review_sha256' => hash_file('sha256', $legalPath),
+            'issued_at' => '2026-09-04T20:00:00Z',
+        ], JSON_UNESCAPED_SLASHES);
+
+        if (!is_string($attestation) || $attestation === '') {
+            throw new RuntimeException('Failed to encode legal approval attestation.');
+        }
+
+        return $attestation;
+    }
+
+    /**
      * @param array{repo:string,legalPath:string,metadataPath:string} $fixture
+     * @param list<string> $extraArgs
      * @return array{exit:int,stdout:string,stderr:string}
      */
-    private function runValidator(array $fixture): array
+    private function runValidator(array $fixture, array $extraArgs): array
     {
-        return $this->runProcess([
+        return $this->runProcess(array_merge([
             PHP_BINARY,
             APP_ROOT . '/ops/validate_release_inputs.php',
             '--repo=' . $fixture['repo'],
             '--legal-review=' . $fixture['legalPath'],
             '--metadata=' . $fixture['metadataPath'],
-        ], APP_ROOT);
+        ], $extraArgs), APP_ROOT);
+    }
+
+    /**
+     * @param list<string> $command
+     */
+    private function gitOutput(string $repo, array $command): string
+    {
+        $result = $this->runProcess($command, $repo);
+        if ($result['exit'] !== 0) {
+            throw new RuntimeException('Git command failed: ' . $result['stderr'] . $result['stdout']);
+        }
+
+        return trim($result['stdout']);
     }
 
     private function commitAll(string $repo, string $message): void

@@ -94,10 +94,15 @@ Before cutting a release tag, validate the release inputs from a clean checkout:
 php ops/validate_release_inputs.php
 ```
 
-The validator fails closed until `release-artifacts/release-metadata.json`
-exists, the referenced SBOM artifact exists, and
+The checked-in
 [LEGAL_PLATFORM_REVIEW.md](/Users/nasir/Documents/GitHub/Cloaking/LEGAL_PLATFORM_REVIEW.md)
-has been completed by an authorized reviewer.
+stays pending by default. Release mechanics only pass when a protected CI
+environment injects `LEGAL_APPROVAL_ATTESTATION` that matches the review file
+digest. Editing the markdown alone is not enough.
+
+The published-phase validator also fails closed until release metadata exists,
+the referenced SBOM artifact exists, and the claimed git tag resolves to the
+claimed current release commit.
 
 ### Nginx
 
@@ -240,8 +245,8 @@ Vulnerability handling and release secret expectations live in
 ## Release gates
 
 - CI runs from a clean checkout, lints PHP, runs the full PHP test suite, verifies pinned image references, validates Docker Compose, rebuilds the production image without cache, exercises Apache/Nginx/Caddy integration checks, generates an SBOM, and scans the image for high and critical vulnerabilities.
-- Protected release tags publish a GHCR image plus `release-artifacts/release-metadata.json`; non-tag branches do not publish release digests.
-- The release stays blocked until the digest metadata exists and `LEGAL_PLATFORM_REVIEW.md` contains an authorized approval decision with evidence.
+- Protected release tags enter the protected `legal-approval` environment, validate the external legal attestation and git tag provenance before any GHCR push, then publish the image digest and post-push metadata.
+- The release stays blocked until the protected `LEGAL_APPROVAL_ATTESTATION` matches the legal review artifact digest and the published metadata proves the immutable tag, commit, image digest, and SBOM artifact together.
 
 ## File structure
 

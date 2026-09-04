@@ -3,38 +3,54 @@
 declare(strict_types=1);
 
 /**
- * Validates release prerequisites that engineering can prove locally:
- * a clean git checkout, a completed legal/platform review record, and
- * digest-backed release metadata with an SBOM artifact.
+ * Validates release prerequisites that engineering can prove mechanically:
+ * a clean git checkout, an injected legal approval attestation bound to the
+ * legal review artifact digest, real git tag/commit provenance, and
+ * digest-backed published metadata when validating post-push artifacts.
  */
 
 $options = parseArguments($argv);
 $failures = [];
 
+$phase = strtolower($options['phase'] ?? 'published');
+if (!in_array($phase, ['prepublish', 'published'], true)) {
+    failFast(sprintf('Unsupported validation phase: %s', $phase));
+}
+
 $repoPath = normalizePath($options['repo'] ?? getcwd() ?: '.');
 $legalReviewPath = normalizePath($options['legal-review'] ?? $repoPath . DIRECTORY_SEPARATOR . 'LEGAL_PLATFORM_REVIEW.md');
 $metadataPath = normalizePath($options['metadata'] ?? $repoPath . DIRECTORY_SEPARATOR . 'release-artifacts' . DIRECTORY_SEPARATOR . 'release-metadata.json');
+$attestationSource = $options['legal-approval-attestation'] ?? getenv('LEGAL_APPROVAL_ATTESTATION') ?: '';
 
 if (!is_dir($repoPath)) {
     failFast(sprintf('Repository path does not exist: %s', $repoPath));
 }
 
-$gitStatus = runProcess(['git', 'status', '--porcelain', '--untracked-files=all'], $repoPath);
-if ($gitStatus['exit'] !== 0) {
-    $failures[] = "Unable to read git status for release validation.\n" . trim($gitStatus['stderr'] . $gitStatus['stdout']);
-} elseif (trim($gitStatus['stdout']) !== '') {
-    $failures[] = 'Release inputs must come from a clean checkout with no tracked or untracked changes.';
-}
+validateCleanCheckout($repoPath, $failures);
 
 $review = parseLegalReview($legalReviewPath, $failures);
-$metadata = parseMetadata($metadataPath, $failures);
+$attestation = parseLegalAttestation($attestationSource, $failures);
+$metadata = null;
+
+if ($phase === 'published') {
+    $metadata = parseMetadata($metadataPath, $failures);
+}
 
 if ($review !== null) {
     validateLegalReview($review, $failures);
 }
 
-if ($metadata !== null) {
-    validateMetadata($metadata, $repoPath, $failures);
+if ($review !== null && $attestation !== null) {
+    validateLegalAttestation($review, $legalReviewPath, $attestation, $failures);
+}
+
+$provenance = resolveGitProvenance($phase, $options, $metadata, $failures);
+if ($provenance !== null) {
+    validateGitProvenance($repoPath, $provenance, $failures);
+}
+
+if ($phase === 'published' && $metadata !== null && $provenance !== null) {
+    validateMetadata($metadata, $metadataPath, $failures);
 }
 
 if ($failures !== []) {
@@ -44,7 +60,7 @@ if ($failures !== []) {
     exit(1);
 }
 
-fwrite(STDOUT, "PASS: release inputs are clean, approved, and digest-pinned.\n");
+fwrite(STDOUT, sprintf("PASS: %s release inputs are clean, attested, and provenance-verified.\n", $phase));
 exit(0);
 
 /**
@@ -85,6 +101,22 @@ function normalizePath(string $path): string
 
 /**
  * @param array<int, string> $failures
+ */
+function validateCleanCheckout(string $repoPath, array &$failures): void
+{
+    $gitStatus = runProcess(['git', 'status', '--porcelain', '--untracked-files=all'], $repoPath);
+    if ($gitStatus['exit'] !== 0) {
+        $failures[] = "Unable to read git status for release validation.\n" . trim($gitStatus['stderr'] . $gitStatus['stdout']);
+        return;
+    }
+
+    if (trim($gitStatus['stdout']) !== '') {
+        $failures[] = 'Release inputs must come from a clean checkout with no tracked or untracked changes.';
+    }
+}
+
+/**
+ * @param array<int, string> $failures
  * @return array<string, string>|null
  */
 function parseLegalReview(string $path, array &$failures): ?array
@@ -108,6 +140,32 @@ function parseLegalReview(string $path, array &$failures): ?array
     }
 
     return $fields;
+}
+
+/**
+ * @param array<int, string> $failures
+ * @return array<string, string>|null
+ */
+function parseLegalAttestation(string $source, array &$failures): ?array
+{
+    if (trim($source) === '') {
+        $failures[] = 'LEGAL_APPROVAL_ATTESTATION is required from a protected external environment before release.';
+        return null;
+    }
+
+    $decoded = json_decode($source, true);
+    if (!is_array($decoded)) {
+        $failures[] = 'LEGAL_APPROVAL_ATTESTATION is not valid JSON.';
+        return null;
+    }
+
+    $attestation = [];
+    foreach (['authorized_by', 'decision', 'review_sha256', 'issued_at'] as $field) {
+        $value = $decoded[$field] ?? null;
+        $attestation[$field] = is_string($value) ? trim($value) : '';
+    }
+
+    return $attestation;
 }
 
 /**
@@ -149,29 +207,118 @@ function validateLegalReview(array $review, array &$failures): void
 }
 
 /**
- * @param array<string, mixed> $metadata
+ * @param array<string, string> $review
+ * @param array<string, string> $attestation
  * @param array<int, string> $failures
  */
-function validateMetadata(array $metadata, string $repoPath, array &$failures): void
+function validateLegalAttestation(array $review, string $legalReviewPath, array $attestation, array &$failures): void
 {
-    $tag = getNestedString($metadata, ['git', 'tag']);
-    $commit = getNestedString($metadata, ['git', 'commit']);
-    $protected = $metadata['git']['protected'] ?? null;
-    $imageRef = getNestedString($metadata, ['image', 'ref']);
-    $digest = getNestedString($metadata, ['image', 'digest']);
-    $sbomPath = getNestedString($metadata, ['sbom', 'path']);
+    if (isPendingValue($attestation['authorized_by'] ?? '')) {
+        $failures[] = 'LEGAL_APPROVAL_ATTESTATION must identify the external authorized approver or environment.';
+    }
+
+    if (strcasecmp($attestation['decision'] ?? '', 'approved') !== 0) {
+        $failures[] = 'LEGAL_APPROVAL_ATTESTATION decision must be approved.';
+    }
+
+    if (preg_match('/^[a-f0-9]{64}$/', $attestation['review_sha256'] ?? '') !== 1) {
+        $failures[] = 'LEGAL_APPROVAL_ATTESTATION must include the sha256 review artifact digest.';
+    } else {
+        $actualDigest = hash_file('sha256', $legalReviewPath);
+        if (!is_string($actualDigest) || $actualDigest !== $attestation['review_sha256']) {
+            $failures[] = 'LEGAL_APPROVAL_ATTESTATION review artifact digest does not match LEGAL_PLATFORM_REVIEW.md.';
+        }
+    }
+
+    if (!isValidIsoTimestamp($attestation['issued_at'] ?? '')) {
+        $failures[] = 'LEGAL_APPROVAL_ATTESTATION must include an ISO-8601 issued_at timestamp.';
+    }
+
+    if (($review['Decision'] ?? '') !== '' && strcasecmp($review['Decision'], $attestation['decision'] ?? '') !== 0) {
+        $failures[] = 'LEGAL_APPROVAL_ATTESTATION decision does not match LEGAL_PLATFORM_REVIEW.md.';
+    }
+}
+
+/**
+ * @param array<string, string> $options
+ * @param array<string, mixed>|null $metadata
+ * @param array<int, string> $failures
+ * @return array{tag:string,commit:string,protected:bool}|null
+ */
+function resolveGitProvenance(string $phase, array $options, ?array $metadata, array &$failures): ?array
+{
+    $tag = trim($options['git-tag'] ?? '');
+    $commit = trim($options['git-commit'] ?? '');
+    $protectedRaw = trim($options['git-ref-protected'] ?? '');
+
+    if ($phase === 'published' && $metadata !== null) {
+        $tag = $tag !== '' ? $tag : getNestedString($metadata, ['git', 'tag']);
+        $commit = $commit !== '' ? $commit : getNestedString($metadata, ['git', 'commit']);
+        if ($protectedRaw === '') {
+            $protectedValue = $metadata['git']['protected'] ?? null;
+            $protectedRaw = $protectedValue === true ? 'true' : ($protectedValue === false ? 'false' : '');
+        }
+    }
 
     if ($tag === '' || !preg_match('/^v[0-9A-Za-z][0-9A-Za-z.\-_]*$/', $tag)) {
-        $failures[] = 'Release metadata must include a versioned git tag.';
+        $failures[] = 'Release provenance must include a versioned git tag.';
     }
 
     if ($commit === '' || !preg_match('/^[a-f0-9]{40}$/', $commit)) {
-        $failures[] = 'Release metadata must include the exact 40-character git commit SHA.';
+        $failures[] = 'Release provenance must include the exact 40-character git commit SHA.';
     }
 
-    if ($protected !== true) {
-        $failures[] = 'Release metadata must record that the tag was protected when the digest was published.';
+    if (!in_array($protectedRaw, ['true', 'false'], true)) {
+        $failures[] = 'Release provenance must record whether the git ref was protected.';
     }
+
+    if ($failures !== []) {
+        return null;
+    }
+
+    return [
+        'tag' => $tag,
+        'commit' => $commit,
+        'protected' => $protectedRaw === 'true',
+    ];
+}
+
+/**
+ * @param array{tag:string,commit:string,protected:bool} $provenance
+ * @param array<int, string> $failures
+ */
+function validateGitProvenance(string $repoPath, array $provenance, array &$failures): void
+{
+    if ($provenance['protected'] !== true) {
+        $failures[] = 'Release provenance must record a protected git ref for published releases.';
+    }
+
+    $headCommit = gitResolve($repoPath, 'HEAD', $failures, 'current HEAD revision');
+    $claimedCommit = gitResolve($repoPath, $provenance['commit'] . '^{commit}', $failures, 'claimed release commit');
+    $tagCommit = gitResolve($repoPath, 'refs/tags/' . $provenance['tag'] . '^{commit}', $failures, 'claimed release tag');
+
+    if ($claimedCommit === null || $tagCommit === null || $headCommit === null) {
+        return;
+    }
+
+    if ($headCommit !== $claimedCommit) {
+        $failures[] = 'Claimed release commit does not match the current release revision at HEAD.';
+    }
+
+    if ($tagCommit !== $claimedCommit) {
+        $failures[] = sprintf('Release tag %s does not point at the claimed release commit.', $provenance['tag']);
+    }
+}
+
+/**
+ * @param array<string, mixed> $metadata
+ * @param array<int, string> $failures
+ */
+function validateMetadata(array $metadata, string $metadataPath, array &$failures): void
+{
+    $imageRef = getNestedString($metadata, ['image', 'ref']);
+    $digest = getNestedString($metadata, ['image', 'digest']);
+    $sbomPath = getNestedString($metadata, ['sbom', 'path']);
 
     if ($imageRef === '' || preg_match('/@sha256:[a-f0-9]{64}$/', $imageRef) !== 1) {
         $failures[] = 'Release metadata must reference the image by an immutable sha256 digest.';
@@ -187,7 +334,13 @@ function validateMetadata(array $metadata, string $repoPath, array &$failures): 
 
     if ($sbomPath === '') {
         $failures[] = 'Release metadata must include the generated SBOM artifact path.';
-    } elseif (!is_file($repoPath . DIRECTORY_SEPARATOR . $sbomPath)) {
+        return;
+    }
+
+    $resolvedSbomPath = isAbsolutePath($sbomPath)
+        ? $sbomPath
+        : dirname($metadataPath) . DIRECTORY_SEPARATOR . $sbomPath;
+    if (!is_file($resolvedSbomPath)) {
         $failures[] = sprintf('Release metadata SBOM artifact is missing: %s', $sbomPath);
     }
 }
@@ -211,6 +364,40 @@ function isPendingValue(string $value): bool
     return $normalized === ''
         || in_array($normalized, ['pending', 'tbd', 'todo', 'unknown', 'n/a'], true)
         || str_contains($normalized, 'pending');
+}
+
+function isValidIsoTimestamp(string $value): bool
+{
+    if ($value === '') {
+        return false;
+    }
+
+    try {
+        new DateTimeImmutable($value);
+    } catch (Throwable) {
+        return false;
+    }
+
+    return true;
+}
+
+function isAbsolutePath(string $path): bool
+{
+    return $path !== '' && $path[0] === DIRECTORY_SEPARATOR;
+}
+
+/**
+ * @param array<int, string> $failures
+ */
+function gitResolve(string $repoPath, string $ref, array &$failures, string $label): ?string
+{
+    $result = runProcess(['git', 'rev-parse', '--verify', $ref], $repoPath);
+    if ($result['exit'] !== 0) {
+        $failures[] = sprintf('Unable to resolve %s: %s', $label, trim($result['stderr'] . $result['stdout']));
+        return null;
+    }
+
+    return trim($result['stdout']);
 }
 
 /**

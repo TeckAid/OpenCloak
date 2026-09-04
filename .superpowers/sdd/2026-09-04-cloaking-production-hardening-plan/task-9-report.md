@@ -79,3 +79,42 @@ verification on this host.
 - Docker-based verification is still outstanding on a host with a running
   Docker daemon. The workflow and scripts are ready, but I do not have fresh
   local build/scan evidence from this machine.
+
+## Fix Round 1
+
+- Reordered the release workflow so the protected `legal-approval` environment
+  injects `LEGAL_APPROVAL_ATTESTATION` and the prepublish legal/git provenance
+  gate runs before any GHCR login or push.
+- Split release validation into two phases:
+  - `prepublish` validates clean checkout, external legal attestation, and real
+    git tag/commit provenance.
+  - `published` validates the pushed digest metadata and SBOM artifact in
+    addition to the same legal/provenance gates.
+- Hardened `ops/validate_release_inputs.php` so legal approval now requires a
+  JSON attestation with `authorized_by`, `decision=approved`, `review_sha256`,
+  and `issued_at`, and the digest must match `LEGAL_PLATFORM_REVIEW.md`.
+- Hardened git provenance checks so the claimed tag and commit must both resolve
+  to real git objects and must match the current release `HEAD`.
+- Updated `tests/Integration/ReleaseValidationTest.php` so the happy-path cases
+  create real temporary commits and tags rather than synthetic SHA strings, and
+  added regressions for:
+  - missing protected attestation
+  - mismatched attestation digest
+  - pending review record even with an attestation
+  - tag not pointing at the claimed release commit
+- Updated `README.md` so it no longer implies that editing the markdown record
+  alone can satisfy the release gate.
+
+### Fix Round 1 Verification
+
+Verified on September 4, 2026:
+
+- `ReleaseValidationTest` passed with all new attestation and tag-provenance cases.
+- `php tests/run.php` passed.
+- PHP lint across tracked `.php` files passed.
+- `.github/workflows/ci.yml` parsed successfully via Ruby YAML loading.
+
+### Remaining Concern
+
+- The checked-in `LEGAL_PLATFORM_REVIEW.md` remains pending by design, so this
+  repo still does not claim legal/platform approval.
