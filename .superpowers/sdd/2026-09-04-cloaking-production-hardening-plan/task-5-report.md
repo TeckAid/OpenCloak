@@ -71,3 +71,27 @@ Result: no syntax errors.
 
 - Generating a new client export intentionally revokes the previously active credential for that campaign. If an operator refreshes the export page, older exported clients stop verifying until the new artifact is redeployed.
 - The new `client_credentials` table is still created through the current request-time schema path because versioned migrations are Task 6 scope. Task 6 should extract this table into `migrations/003_client_credentials.sql`.
+
+## Follow-up fix: untrusted forwarded proto in client artifact
+
+Date: 2026-09-04
+Base commit: `d69e8b5`
+
+- Root cause: `includes/client_template.php.txt` trusted `X-Forwarded-Proto` even though the standalone generated client has no trusted-proxy allowlist, so any caller could make the artifact set a `Secure` visitor cookie over plain HTTP.
+- Fix: `cloak_is_https()` now relies only on direct PHP HTTPS state and ignores forwarded headers in the generated artifact.
+- Regression test added: `HttpTest::test_generated_client_ignores_untrusted_forwarded_proto_for_secure_cookie`
+
+Verification:
+
+```text
+php -l includes/client_template.php.txt
+php -l tests/Integration/HttpTest.php
+php -r 'require "tests/bootstrap.php"; require "tests/Integration/HttpTest.php"; ...test_generated_client_ignores_untrusted_forwarded_proto_for_secure_cookie...'
+php tests/run.php
+```
+
+Observed results:
+
+- The new regression test failed before the fix with `Expected false`.
+- After the fix, the regression test passed.
+- The full suite passed after the fix.

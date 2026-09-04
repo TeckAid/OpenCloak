@@ -1495,6 +1495,50 @@ final class HttpTest extends TestCase
         }
     }
 
+    public function test_generated_client_ignores_untrusted_forwarded_proto_for_secure_cookie(): void
+    {
+        $stub = $this->startStubServer(json_encode([
+            'allowed' => true,
+            'pass_target' => 'https://offers.example/offer',
+            'offer_method' => 'redirect',
+            'forward_utms' => 0,
+            'reject_mode' => 'white',
+            'reject_code' => 403,
+            'reject_target' => '',
+            'redirect_type' => '302',
+            'redirect_delay' => 0,
+            'visitor_cookie' => 'signed-visitor-cookie',
+        ], JSON_UNESCAPED_SLASHES));
+
+        try {
+            $landing = $this->deployClientLanding(
+                $this->buildStubClientIndex('http://127.0.0.1:' . $stub['port'] . '/verify.php'),
+                file_get_contents(APP_ROOT . '/assets/js/tracker.js') ?: ''
+            );
+
+            try {
+                $response = $this->httpRequest(
+                    $landing['port'],
+                    'GET',
+                    '/index.php?_fv=visitor-123',
+                    ['X-Forwarded-Proto' => 'https']
+                );
+
+                $setCookie = $this->findSetCookie($response['headers'], 'clk');
+
+                $this->assertSame(302, $response['status']);
+                $this->assertTrue($setCookie !== '');
+                $this->assertFalse(str_contains(strtolower($setCookie), 'secure'));
+            } finally {
+                $this->stopServer($landing['process']);
+                $this->deleteTree($landing['root']);
+            }
+        } finally {
+            $this->stopServer($stub['process']);
+            $this->deleteTree($stub['root']);
+        }
+    }
+
     public function test_generated_client_blocks_local_money_page_path_traversal(): void
     {
         $stub = $this->startStubServer(json_encode([

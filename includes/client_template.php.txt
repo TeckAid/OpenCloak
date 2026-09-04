@@ -11,13 +11,7 @@ define('CLOAK_VERIFY_URL', '{{VERIFY_URL}}');
 
 function cloak_is_https(): bool
 {
-    if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
-        return true;
-    }
-
-    $forwardedProto = strtolower(trim((string) ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '')));
-
-    return in_array($forwardedProto, ['https', 'wss'], true);
+    return !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
 }
 
 function cloak_fail(string $message, int $status = 502): never
