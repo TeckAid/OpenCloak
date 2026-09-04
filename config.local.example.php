@@ -17,10 +17,19 @@ define('DB_PATH', __DIR__ . '/data/cloaking.db');
 // generated automatically in data/app.key on first run.
 define('APP_KEY', str_repeat('0', 64));
 
+// Canonical application URL used for generated links and callbacks.
+define('APP_BASE_URL', 'https://app.example.com');
+
+// System hosts that may serve system-owned links (usually your primary app
+// domain plus any direct IP or local-dev hostname you intentionally use).
+define('SYSTEM_HOSTS', [
+    'app.example.com',
+]);
+
 // Trust forwarding headers only from these proxies (e.g. Cloudflare IPs).
 // Leave empty (default) to always use REMOTE_ADDR.
 define('TRUSTED_PROXIES', [
-    // '173.245.48.0/20', // Cloudflare example (CIDR blocks not supported — list IPs or use a library)
+    // '173.245.48.0/20', // Cloudflare example (CIDR blocks supported)
 ]);
 
 // Disable the Tor exit-node DNSBL lookup if DNS is slow in your environment

@@ -48,6 +48,16 @@ if (!defined('SESSION_LIFETIME')) {
     define('SESSION_LIFETIME', 3600 * 8); // 8 hours
 }
 
+// Canonical application URL and system short-link hosts. Never derive these
+// from an arbitrary Host header in production.
+if (!defined('APP_BASE_URL')) {
+    define('APP_BASE_URL', 'http://127.0.0.1');
+}
+if (!defined('SYSTEM_HOSTS')) {
+    $appBaseHost = parse_url(APP_BASE_URL, PHP_URL_HOST);
+    define('SYSTEM_HOSTS', [is_string($appBaseHost) && $appBaseHost !== '' ? strtolower($appBaseHost) : '127.0.0.1']);
+}
+
 // Proxies that are allowed to set forwarding headers (e.g. Cloudflare ranges).
 // Empty = never trust forwarding headers; always use REMOTE_ADDR.
 if (!defined('TRUSTED_PROXIES')) {

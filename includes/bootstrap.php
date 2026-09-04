@@ -14,6 +14,10 @@ function boot_app(bool $withSession = true): void
 
     // ---- Error handling: log, never leak details ---------------------------
     $logErrors = function (Throwable $e): void {
+        if ($e instanceof BadRequestException) {
+            app_abort_request($e->getCode() >= 400 ? $e->getCode() : 400, $e->getMessage() !== '' ? $e->getMessage() : 'Bad request.');
+        }
+
         $line = sprintf(
             "[%s] %s: %s in %s:%d\n",
             date('Y-m-d H:i:s'),
@@ -57,6 +61,10 @@ function boot_app(bool $withSession = true): void
              . "style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'");
     }
 
+    require_once __DIR__ . '/database.php';
+    initDatabase();
+    app_enforce_allowed_host();
+
     // ---- Sessions (admin only; public cloaked requests stay session-free) ---
     if ($withSession) {
         $secure = app_is_https();
@@ -81,7 +89,4 @@ function boot_app(bool $withSession = true): void
         }
         $_SESSION['last_activity'] = $now;
     }
-
-    require_once __DIR__ . '/database.php';
-    initDatabase();
 }

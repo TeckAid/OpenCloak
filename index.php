@@ -16,15 +16,15 @@ $db = getDB();
 $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 $slug = basename($path);
 if ($slug === '' || $slug === '/' || $slug === 'index.php') {
-    $slug = isset($_GET['s']) ? (string)$_GET['s'] : '';
+    $slug = app_query_scalar('s', 128) ?? '';
 }
 
 // ---- Resolve domain -----------------------------------------------------------
-$host = strtolower((string)(explode(':', $_SERVER['HTTP_HOST'] ?? '')[0]));
+$host = app_request_context()['host'] ?? '';
 $domainId = null;
 $domainRow = null;
 if ($host !== '') {
-    $stmt = $db->prepare("SELECT * FROM domains WHERE domain = ? AND is_active = 1");
+    $stmt = $db->prepare("SELECT * FROM domains WHERE lower(domain) = ? AND is_active = 1");
     $stmt->execute([$host]);
     $domainRow = $stmt->fetch() ?: null;
     if ($domainRow) {
@@ -46,10 +46,11 @@ if ($slug !== '') {
 }
 
 // ---- Debug mode (secret-token gated) -------------------------------------------
-if (isset($_GET['_debug']) && is_string($_GET['_debug'])) {
-    $validToken = defined('DEBUG_TOKEN') && hash_equals(DEBUG_TOKEN, $_GET['_debug']);
+if (($debugToken = app_query_scalar('_debug', 128)) !== null) {
+    $validToken = defined('DEBUG_TOKEN') && hash_equals(DEBUG_TOKEN, $debugToken);
     if ($validToken) {
-        $fingerprint = isset($_GET['_fph']) ? fingerprint_decode((string)$_GET['_fph']) : [];
+        $fingerprintToken = app_query_scalar('_fph');
+        $fingerprint = $fingerprintToken !== null ? fingerprint_decode($fingerprintToken) : [];
         $payload = [
             'slug'       => $slug,
             'host'       => $host,
@@ -95,7 +96,8 @@ if ($rules === null) {
     $detectionResult = $detector->getResult();
 } else {
     // ---- Fingerprint handling ---------------------------------------------------
-    $fingerprint = isset($_GET['_fph']) ? fingerprint_decode((string)$_GET['_fph']) : [];
+    $fingerprintToken = app_query_scalar('_fph');
+    $fingerprint = $fingerprintToken !== null ? fingerprint_decode($fingerprintToken) : [];
     $needsFp = !empty($rules['require_screen_info'])
         || !empty($rules['allowed_resolutions']) || !empty($rules['blocked_resolutions'])
         || !empty($rules['single_visit_only']);
@@ -128,7 +130,7 @@ if ($rules === null) {
                 $db,
                 !empty($link['campaign_id']) ? (int)$link['campaign_id'] : (int)$link['id'],
                 !empty($link['campaign_id']),
-                (string)($_SERVER['REMOTE_ADDR'] ?? ''),
+                app_client_ip(),
                 $rules
             );
             if ($delayReason !== '') {
@@ -137,8 +139,8 @@ if ($rules === null) {
         }
 
         // Issue the visitor token on first completed fingerprint round-trip
-        if ($fingerprint !== [] && isset($_GET['_fv'])) {
-            setcookie('cvk', (string)$_GET['_fv'], [
+        if ($fingerprint !== [] && ($visitorToken = app_query_scalar('_fv', 512)) !== null) {
+            setcookie('cvk', $visitorToken, [
                 'expires'  => time() + 86400 * 365,
                 'path'     => '/',
                 'secure'   => app_is_https(),
@@ -156,7 +158,7 @@ if (defined('LOG_ENABLED') && LOG_ENABLED) {
     $source = derive_source(
         (string)($_SERVER['HTTP_REFERER'] ?? ''),
         (string)($detectionResult['client_type'] ?? ''),
-        isset($_GET['utm_source']) ? (string)$_GET['utm_source'] : ''
+        app_query_scalar('utm_source', 255) ?? ''
     );
     $db->prepare("
         INSERT INTO hit_log (link_id, campaign_id, host, ip, user_agent, referer, language, country,
@@ -167,7 +169,7 @@ if (defined('LOG_ENABLED') && LOG_ENABLED) {
         (int)$link['id'],
         !empty($link['campaign_id']) ? (int)$link['campaign_id'] : null,
         $host,
-        $_SERVER['REMOTE_ADDR'] ?? '',
+        app_client_ip(),
         $_SERVER['HTTP_USER_AGENT'] ?? '',
         $_SERVER['HTTP_REFERER'] ?? '',
         $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '',

@@ -8,6 +8,7 @@
  */
 
 require_once __DIR__ . '/rules.php';
+require_once __DIR__ . '/security.php';
 
 class BotDetector
 {
@@ -16,6 +17,7 @@ class BotDetector
     private array $headers;
     private array $context;
     private ?array $detected = null;
+    private ?array $validatedParams = null;
 
     private array $result = [
         'is_bot'          => false,
@@ -120,7 +122,7 @@ class BotDetector
     public function __construct(?string $ip = null, ?string $userAgent = null, array $context = [])
     {
         $this->context = $context;
-        $this->ip = $ip ?: $this->envStr('REMOTE_ADDR', '127.0.0.1');
+        $this->ip = $ip ?: app_client_ip();
         $this->userAgent = $userAgent ?: $this->envStr('HTTP_USER_AGENT', '');
         $this->headers = $this->collectHeaders();
     }
@@ -696,9 +698,9 @@ class BotDetector
     private function queryParam(string $name): ?string
     {
         if (isset($this->context['params']) && is_array($this->context['params'])) {
-            return array_key_exists($name, $this->context['params']) ? (string)$this->context['params'][$name] : null;
+            return app_array_get_scalar($this->validatedParams(), $name, 4096, "query parameter {$name}");
         }
-        return isset($_GET[$name]) ? (string)$_GET[$name] : null;
+        return app_query_scalar($name);
     }
 
     /**
@@ -707,7 +709,7 @@ class BotDetector
     private function queryString(): string
     {
         if (isset($this->context['params']) && is_array($this->context['params'])) {
-            return http_build_query($this->context['params']);
+            return http_build_query($this->validatedParams());
         }
         return (string)($_SERVER['QUERY_STRING'] ?? '');
     }
@@ -759,5 +761,21 @@ class BotDetector
             }
         }
         return $headers;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function validatedParams(): array
+    {
+        if ($this->validatedParams !== null) {
+            return $this->validatedParams;
+        }
+
+        return $this->validatedParams = app_validate_scalar_map(
+            $this->context['params'],
+            4096,
+            'query parameter'
+        );
     }
 }

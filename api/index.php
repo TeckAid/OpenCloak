@@ -149,7 +149,7 @@ function sanitizeRules(array $input, array $existing = []): array
         } elseif ($col === 'delay_start') {
             $out[$col] = max(0, min(100000, (int)($input[$col] ?? $existing[$col] ?? 0)));
         } else {
-            $out[$col] = trim((string)($input[$col] ?? $existing[$col] ?? ''));
+            $out[$col] = trim(app_scalar_value($input[$col] ?? $existing[$col] ?? '', $col, 4096) ?? '');
         }
     }
     return $out;
@@ -176,12 +176,13 @@ switch ($resource) {
         if ($method === 'POST' && $id === null) {
             $input = readJsonBody();
 
-            $slug = trim((string)($input['slug'] ?? ''));
+            $slug = trim(app_array_get_scalar($input, 'slug', 128, 'slug') ?? '');
             if ($slug === '') $slug = bin2hex(random_bytes(6));
             if (!is_valid_slug($slug)) {
                 apiError('Invalid slug: use 1-64 chars of [a-zA-Z0-9_-] and avoid reserved words.', 400);
             }
-            if (!is_valid_offer_url((string)($input['offer_url'] ?? ''))) {
+            $offerUrl = trim(app_array_get_scalar($input, 'offer_url', 2048, 'offer_url') ?? '');
+            if (!is_valid_offer_url($offerUrl)) {
                 apiError('offer_url must be a valid http(s) URL.', 400);
             }
 
@@ -214,8 +215,8 @@ switch ($resource) {
             );
             $linkValues = array_merge(
                 [
-                    $userId, $slug, trim((string)($input['name'] ?? '')), $campaignId, $domainId,
-                    trim((string)$input['offer_url']), $input['white_page'] ?? '', $redirectType,
+                    $userId, $slug, trim(app_array_get_scalar($input, 'name', 255, 'name') ?? ''), $campaignId, $domainId,
+                    $offerUrl, app_array_get_scalar($input, 'white_page', 65535, 'white_page') ?? '', $redirectType,
                     max(0, min(30, (int)($input['redirect_delay'] ?? 0))),
                 ],
                 array_map(fn($col) => $r[$col], RULE_COLUMNS)
@@ -247,7 +248,8 @@ switch ($resource) {
             }
             if ($method === 'PUT') {
                 $input = readJsonBody();
-                if (array_key_exists('offer_url', $input) && !is_valid_offer_url((string)$input['offer_url'])) {
+                $offerUrl = trim(app_array_get_scalar($input, 'offer_url', 2048, 'offer_url') ?? (string)$link['offer_url']);
+                if (array_key_exists('offer_url', $input) && !is_valid_offer_url($offerUrl)) {
                     apiError('offer_url must be a valid http(s) URL.', 400);
                 }
                 $r = sanitizeRules($input, $link);
@@ -261,9 +263,9 @@ switch ($resource) {
                 );
                 $setValues = array_merge(
                     [
-                        trim((string)($input['name'] ?? $link['name'])),
-                        trim((string)($input['offer_url'] ?? $link['offer_url'])),
-                        $input['white_page'] ?? $link['white_page'],
+                        trim(app_array_get_scalar($input, 'name', 255, 'name') ?? (string)$link['name']),
+                        $offerUrl,
+                        app_array_get_scalar($input, 'white_page', 65535, 'white_page') ?? $link['white_page'],
                         $redirectType,
                         max(0, min(30, (int)($input['redirect_delay'] ?? $link['redirect_delay']))),
                         (int)($input['is_active'] ?? $link['is_active']) ? 1 : 0,
@@ -294,6 +296,10 @@ switch ($resource) {
             $r = sanitizeRules($input);
             $rt = (string)($input['redirect_type'] ?? '302');
             $redirectType = in_array($rt, ['301', '302', '303', 'meta'], true) ? $rt : '302';
+            $offerUrl = trim(app_array_get_scalar($input, 'offer_url', 2048, 'offer_url') ?? '');
+            if ($offerUrl !== '' && !is_valid_offer_url($offerUrl)) {
+                apiError('offer_url must be a valid http(s) URL.', 400);
+            }
 
             $campColumns = array_merge(
                 ['user_id', 'name', 'is_active', 'offer_url', 'white_page', 'reject_mode', 'reject_code', 'redirect_type', 'redirect_delay'],
@@ -301,8 +307,8 @@ switch ($resource) {
             );
             $campValues = array_merge(
                 [
-                    $userId, trim((string)($input['name'] ?? '')), (int)($input['is_active'] ?? 1) ? 1 : 0,
-                    trim((string)($input['offer_url'] ?? '')), $input['white_page'] ?? '',
+                    $userId, trim(app_array_get_scalar($input, 'name', 255, 'name') ?? ''), (int)($input['is_active'] ?? 1) ? 1 : 0,
+                    $offerUrl, app_array_get_scalar($input, 'white_page', 65535, 'white_page') ?? '',
                     in_array((string)($input['reject_mode'] ?? 'white'), ['white', 'error'], true)
                         ? (string)($input['reject_mode'] ?? 'white') : 'white',
                     (int)($input['reject_code'] ?? 403),
@@ -342,6 +348,10 @@ switch ($resource) {
                 $r = sanitizeRules($input, $campaign);
                 $rt = (string)($input['redirect_type'] ?? $campaign['redirect_type']);
                 $redirectType = in_array($rt, ['301', '302', '303', '303', 'meta'], true) ? $rt : '302';
+                $offerUrl = trim(app_array_get_scalar($input, 'offer_url', 2048, 'offer_url') ?? (string)$campaign['offer_url']);
+                if (array_key_exists('offer_url', $input) && $offerUrl !== '' && !is_valid_offer_url($offerUrl)) {
+                    apiError('offer_url must be a valid http(s) URL.', 400);
+                }
 
                 $setCols = array_merge(
                     ['name = ?', 'is_active = ?', 'offer_url = ?', 'white_page = ?', 'reject_mode = ?',
@@ -351,10 +361,10 @@ switch ($resource) {
                 );
                 $setValues = array_merge(
                     [
-                        trim((string)($input['name'] ?? $campaign['name'])),
+                        trim(app_array_get_scalar($input, 'name', 255, 'name') ?? (string)$campaign['name']),
                         (int)($input['is_active'] ?? $campaign['is_active']) ? 1 : 0,
-                        trim((string)($input['offer_url'] ?? $campaign['offer_url'])),
-                        $input['white_page'] ?? $campaign['white_page'],
+                        $offerUrl,
+                        app_array_get_scalar($input, 'white_page', 65535, 'white_page') ?? $campaign['white_page'],
                         in_array((string)($input['reject_mode'] ?? $campaign['reject_mode']), ['white', 'error'], true)
                             ? (string)($input['reject_mode'] ?? $campaign['reject_mode']) : 'white',
                         (int)($input['reject_code'] ?? $campaign['reject_code']),
@@ -473,15 +483,17 @@ switch ($resource) {
             if (!$campaign) apiError('Campaign not found.', 404);
             if (empty($campaign['is_active'])) apiError('Campaign is inactive.', 403);
 
-            $ip = trim((string)($input['ip'] ?? ''));
+            $ip = trim(app_array_get_scalar($input, 'ip', 64, 'ip') ?? '');
             if (!filter_var($ip, FILTER_VALIDATE_IP)) {
-                $ip = $_SERVER['REMOTE_ADDR'] ?? '127.0.0.1';
+                $ip = app_client_ip();
             }
+            $params = is_array($input['params'] ?? null) ? app_validate_scalar_map($input['params'], 4096, 'query parameter') : [];
+            $userAgent = app_array_get_scalar($input, 'user_agent', 2048, 'user_agent') ?? '';
             $context = [
-                'accept'        => (string)($input['accept'] ?? ''),
-                'language'      => (string)($input['language'] ?? ''),
-                'referer'       => (string)($input['referer'] ?? ''),
-                'params'        => is_array($input['params'] ?? null) ? $input['params'] : [],
+                'accept'        => app_array_get_scalar($input, 'accept', 1024, 'accept') ?? '',
+                'language'      => app_array_get_scalar($input, 'language', 255, 'language') ?? '',
+                'referer'       => app_array_get_scalar($input, 'referer', 2048, 'referer') ?? '',
+                'params'        => $params,
             ];
             $fingerprint = is_array($input['fingerprint'] ?? null) ? $input['fingerprint'] : [];
             $tokenPresent = !empty($input['token_present']);
@@ -494,7 +506,7 @@ switch ($resource) {
                 apiSuccess(['allowed' => false, 'reasons' => [], 'fingerprint_required' => true]);
             }
 
-            $detector = new BotDetector($ip, (string)($input['user_agent'] ?? ''), $context);
+            $detector = new BotDetector($ip, $userAgent, $context);
             $eval = $detector->evaluate($campaign, $fingerprint, $tokenPresent);
             $result = $detector->getResult();
 
@@ -514,10 +526,9 @@ switch ($resource) {
 
             // Log
             if (defined('LOG_ENABLED') && LOG_ENABLED) {
-                $utm = is_array($input['params'] ?? null) && isset($input['params']['utm_source'])
-                    ? (string)$input['params']['utm_source'] : '';
+                $utm = $params['utm_source'] ?? '';
                 $source = derive_source(
-                    (string)($input['referer'] ?? ''),
+                    $context['referer'],
                     (string)($result['client_type'] ?? ''),
                     $utm
                 );
@@ -528,11 +539,11 @@ switch ($resource) {
                     VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ")->execute([
                     $campaignId,
-                    (string)($input['host'] ?? ''),
+                    app_array_get_scalar($input, 'host', 255, 'host') ?? '',
                     $ip,
-                    (string)($input['user_agent'] ?? ''),
-                    (string)($input['referer'] ?? ''),
-                    (string)($input['language'] ?? ''),
+                    $userAgent,
+                    $context['referer'],
+                    $context['language'],
                     $result['country'] ?? '',
                     $result['device_type'] ?? '',
                     $result['os_name'] ?? '',
