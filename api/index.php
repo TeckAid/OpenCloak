@@ -94,19 +94,32 @@ if ($apiKey === '') {
 }
 
 $db = getDB();
-$stmt = $db->prepare("SELECT id FROM users WHERE api_key = ?");
-$stmt->execute([$apiKey]);
-$user = $stmt->fetch();
-
-if (!$user) {
-    apiError('Invalid API key.', 401);
-}
-$userId = (int) $user['id'];
-
-// ---- Routing --------------------------------------------------------------------
 $resource = $segments[0] ?? '';
 $id = getSegmentId($segments, 1);
+$isVerifyRequest = $resource === 'verify';
+$clientCredential = authenticate_client_credential($db, $apiKey);
 
+if ($isVerifyRequest) {
+    if ($clientCredential === false) {
+        apiError('Invalid client credential.', 401);
+    }
+    $userId = (int) $clientCredential['user_id'];
+} else {
+    if ($clientCredential !== false) {
+        apiError('Client credentials can only call /api/verify.', 403);
+    }
+
+    $stmt = $db->prepare("SELECT id FROM users WHERE api_key = ?");
+    $stmt->execute([$apiKey]);
+    $user = $stmt->fetch();
+
+    if (!$user) {
+        apiError('Invalid API key.', 401);
+    }
+    $userId = (int) $user['id'];
+}
+
+// ---- Routing --------------------------------------------------------------------
 switch ($resource) {
     case 'links':
         if (count($segments) === 1) {
@@ -384,7 +397,7 @@ switch ($resource) {
             apiMethodNotAllowed();
         }
         if (defined('RATE_LIMIT_ENABLED') && RATE_LIMIT_ENABLED) {
-            if (!rate_limit('verify:' . $apiKey, 1000, 60)) {
+            if (!rate_limit('verify:' . ($clientCredential['credential_hash'] ?? client_credential_hash($apiKey)), 1000, 60)) {
                 apiError('Rate limit exceeded.', 429);
             }
         }
@@ -393,6 +406,10 @@ switch ($resource) {
         $campaignId = (int)($input['campaign_id'] ?? 0);
         if ($campaignId <= 0) {
             apiError('campaign_id is required.', 400);
+        }
+
+        if (!credential_allows_campaign($clientCredential, $campaignId)) {
+            apiError('Credential is not allowed to verify this campaign.', 403);
         }
 
         $stmt = $db->prepare("SELECT * FROM campaigns WHERE id = ? AND user_id = ?");
@@ -418,7 +435,10 @@ switch ($resource) {
             'params' => $params,
         ];
         $fingerprint = is_array($input['fingerprint'] ?? null) ? $input['fingerprint'] : [];
-        $tokenPresent = !empty($input['token_present']);
+        $visitorToken = trim(app_array_get_scalar($input, 'visitor_token', 512, 'visitor_token') ?? '');
+        $visitorCookie = trim(app_array_get_scalar($input, 'visitor_cookie', 2048, 'visitor_cookie') ?? '');
+        $verifiedVisitor = $visitorToken !== '' ? verify_visitor_token($visitorCookie, visitor_scope_key('campaign', $campaignId)) : false;
+        $tokenPresent = is_string($verifiedVisitor) && hash_equals($verifiedVisitor, $visitorToken);
 
         $needsFp = !empty($campaign['require_screen_info'])
             || !empty($campaign['allowed_resolutions']) || !empty($campaign['blocked_resolutions'])
@@ -475,10 +495,16 @@ switch ($resource) {
         }
 
         $delivery = build_delivery_config($campaign, (string)($result['country'] ?? ''), (int)$campaign['offer_shows']);
+        $passTarget = $eval['allowed'] ? (string) $delivery['offer_url'] : '';
+        if ($passTarget !== '' && !is_valid_offer_url($passTarget)) {
+            $eval = ['allowed' => false, 'reasons' => ['invalid_offer_url']];
+            $passTarget = '';
+        }
+
         apiSuccess([
             'allowed' => $eval['allowed'],
             'reasons' => $eval['reasons'],
-            'pass_target' => $eval['allowed'] ? $delivery['offer_url'] : '',
+            'pass_target' => $passTarget,
             'offer_method' => $delivery['offer_method'],
             'forward_utms' => !empty($campaign['forward_utms']) ? 1 : 0,
             'reject_mode' => normalize_reject_mode((string)($campaign['reject_mode'] ?? 'white')),
@@ -486,6 +512,9 @@ switch ($resource) {
             'reject_target' => (string)($campaign['white_page'] ?? ''),
             'redirect_type' => $delivery['redirect_type'],
             'redirect_delay' => $delivery['redirect_delay'],
+            'visitor_cookie' => ($eval['allowed'] && $visitorToken !== '')
+                ? sign_visitor_token(visitor_scope_key('campaign', $campaignId), $visitorToken)
+                : '',
         ]);
 
     case 'stats':

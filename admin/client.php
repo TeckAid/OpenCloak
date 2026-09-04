@@ -27,19 +27,21 @@ if ($selectedId > 0) {
     $selected = $stmt->fetch() ?: null;
 }
 
-$user = current_user();
-$apiKey = $user['api_key'];
 $verifyUrl = app_base_url() . '/api/verify';
 
 $clientCode = '';
-if ($selected && $apiKey) {
+$credentialExpiresAt = null;
+if ($selected) {
+    $clientCredential = issue_client_credential($db, $userId, (int) $selected['id']);
+    $credentialRow = authenticate_client_credential($db, $clientCredential);
     $placeholders = [
-        '{{API_KEY}}'     => $apiKey,
-        '{{CAMPAIGN_ID}}' => (string)$selected['id'],
-        '{{VERIFY_URL}}'  => $verifyUrl,
+        '{{CLIENT_CREDENTIAL}}' => $clientCredential,
+        '{{CAMPAIGN_ID}}'        => (string) $selected['id'],
+        '{{VERIFY_URL}}'         => $verifyUrl,
     ];
     $template = file_get_contents(__DIR__ . '/../includes/client_template.php.txt');
     $clientCode = strtr($template, $placeholders);
+    $credentialExpiresAt = is_array($credentialRow) ? (string) ($credentialRow['expires_at'] ?? '') : null;
 }
 
 $trackerCode = file_get_contents(__DIR__ . '/../assets/js/tracker.js');
@@ -107,6 +109,10 @@ $activeNav = '/admin/client.php';
                     <h3 style="margin-top:2rem">Step 3 — Optional money page</h3>
                     <p>If the campaign's offer URL is not a full http(s) link but a filename (e.g. <code>page.html</code>),
                     the client will render that file from its own directory. Otherwise visitors are redirected to the offer URL.</p>
+                    <?php if ($credentialExpiresAt): ?>
+                        <p><strong>Scoped verify credential:</strong> this export rotates the prior campaign token and expires at
+                        <code><?= htmlspecialchars($credentialExpiresAt) ?> UTC</code>.</p>
+                    <?php endif; ?>
                     <p>Upload both files to your landing server directory, ensure PHP is available, then visit the URL.
                     Results appear in the <a href="/admin/dashboard.php">Dashboard</a>.</p>
                 </div>

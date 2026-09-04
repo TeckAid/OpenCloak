@@ -215,6 +215,22 @@ function setupDatabase(): PDO
         )
     ");
 
+    $db->exec("
+        CREATE TABLE IF NOT EXISTS client_credentials (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            campaign_id INTEGER NOT NULL,
+            credential_hash TEXT UNIQUE NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'verify',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            expires_at DATETIME NOT NULL,
+            revoked_at DATETIME,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+        )
+    ");
+
     // First-N visitor tracking for the delay-start filter
     $db->exec("
         CREATE TABLE IF NOT EXISTS delay_ips (
@@ -237,13 +253,15 @@ function setupDatabase(): PDO
     $db->exec("CREATE INDEX IF NOT EXISTS idx_links_domain ON links(domain_id, slug)");
     $db->exec("CREATE INDEX IF NOT EXISTS idx_campaigns_user ON campaigns(user_id)");
     $db->exec("CREATE INDEX IF NOT EXISTS idx_delay_ips ON delay_ips(campaign_id, link_id, ip_hash)");
+    $db->exec("CREATE INDEX IF NOT EXISTS idx_client_credentials_campaign ON client_credentials(campaign_id, status, expires_at DESC)");
+    $db->exec("CREATE INDEX IF NOT EXISTS idx_client_credentials_hash ON client_credentials(credential_hash)");
 
     return $db;
 }
 
 function verifyDatabaseSchema(PDO $db): void
 {
-    $requiredTables = ['users', 'campaigns', 'domains', 'links', 'settings', 'rate_limits', 'delay_ips', 'hit_log'];
+    $requiredTables = ['users', 'campaigns', 'domains', 'links', 'settings', 'rate_limits', 'delay_ips', 'hit_log', 'client_credentials'];
 
     foreach ($requiredTables as $table) {
         $stmt = $db->prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?");
@@ -396,6 +414,25 @@ function migrate(PDO $db): void
 
     // hit_log: source column for databases that predate it
     $addColumn('hit_log', 'source', "TEXT DEFAULT ''");
+
+    $clientCredentialTables = $columns('client_credentials');
+    if ($clientCredentialTables === []) {
+        $db->exec("
+            CREATE TABLE IF NOT EXISTS client_credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                campaign_id INTEGER NOT NULL,
+                credential_hash TEXT UNIQUE NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'verify',
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME NOT NULL,
+                revoked_at DATETIME,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+            )
+        ");
+    }
 }
 
 /**
@@ -415,4 +452,131 @@ function maintenance_tick(PDO $db): void
     } catch (Throwable $e) {
         // Maintenance must never break a request
     }
+}
+
+function client_credential_hash(string $token): string
+{
+    $secret = defined('APP_KEY') ? (string) APP_KEY : 'test-app-key';
+
+    return hash_hmac('sha256', $token, $secret);
+}
+
+function issue_client_credential(PDO $db, int $userId, int $campaignId, int $ttlSeconds = 2592000): string
+{
+    $stmt = $db->prepare('SELECT id FROM campaigns WHERE id = ? AND user_id = ? LIMIT 1');
+    $stmt->execute([$campaignId, $userId]);
+    if ($stmt->fetchColumn() === false) {
+        throw new RuntimeException('Campaign not found for credential issuance.');
+    }
+
+    $token = 'cc_' . bin2hex(random_bytes(24));
+    $hash = client_credential_hash($token);
+
+    $expiresModifier = ($ttlSeconds >= 0 ? '+' . max(1, $ttlSeconds) : (string) $ttlSeconds) . ' seconds';
+
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $db->prepare("
+            UPDATE client_credentials
+               SET status = 'revoked',
+                   revoked_at = COALESCE(revoked_at, CURRENT_TIMESTAMP)
+             WHERE user_id = ?
+               AND campaign_id = ?
+               AND scope = 'verify'
+               AND status = 'active'
+        ")->execute([$userId, $campaignId]);
+
+        $db->prepare("
+            INSERT INTO client_credentials (user_id, campaign_id, credential_hash, scope, status, expires_at)
+            VALUES (?, ?, ?, 'verify', 'active', datetime('now', ?))
+        ")->execute([$userId, $campaignId, $hash, $expiresModifier]);
+
+        $db->exec('COMMIT');
+    } catch (Throwable $e) {
+        $db->exec('ROLLBACK');
+        throw $e;
+    }
+
+    return $token;
+}
+
+function authenticate_client_credential(PDO $db, string $token): array|false
+{
+    $token = trim($token);
+    if ($token === '') {
+        return false;
+    }
+
+    $stmt = $db->prepare("
+        SELECT *
+          FROM client_credentials
+         WHERE credential_hash = ?
+           AND scope = 'verify'
+         LIMIT 1
+    ");
+    $stmt->execute([client_credential_hash($token)]);
+    $row = $stmt->fetch();
+    if (!is_array($row)) {
+        return false;
+    }
+
+    if ((string) ($row['status'] ?? '') !== 'active') {
+        return false;
+    }
+    if (!empty($row['revoked_at'])) {
+        return false;
+    }
+    if (strtotime((string) $row['expires_at']) <= time()) {
+        return false;
+    }
+
+    return $row;
+}
+
+function credential_allows_campaign(array|false $credential, int $campaignId): bool
+{
+    return is_array($credential) && (int) ($credential['campaign_id'] ?? 0) === $campaignId;
+}
+
+function visitor_scope_key(string $kind, int $id): string
+{
+    return $kind . ':' . $id;
+}
+
+function sign_visitor_token(string $scope, string $visitorToken): string
+{
+    $secret = defined('APP_KEY') ? (string) APP_KEY : 'test-app-key';
+    $scopeB64 = rtrim(strtr(base64_encode($scope), '+/', '-_'), '=');
+    $tokenB64 = rtrim(strtr(base64_encode($visitorToken), '+/', '-_'), '=');
+    $payload = $scopeB64 . '.' . $tokenB64;
+    $signature = hash_hmac('sha256', $payload, $secret);
+
+    return $payload . '.' . $signature;
+}
+
+function verify_visitor_token(string $signedToken, string $scope): string|false
+{
+    $parts = explode('.', $signedToken, 3);
+    if (count($parts) !== 3) {
+        return false;
+    }
+
+    [$scopeB64, $tokenB64, $signature] = $parts;
+    $payload = $scopeB64 . '.' . $tokenB64;
+    $secret = defined('APP_KEY') ? (string) APP_KEY : 'test-app-key';
+    $expected = hash_hmac('sha256', $payload, $secret);
+    if (!hash_equals($expected, $signature)) {
+        return false;
+    }
+
+    $decodedScope = base64_decode(strtr($scopeB64, '-_', '+/') . str_repeat('=', (4 - strlen($scopeB64) % 4) % 4), true);
+    $decodedToken = base64_decode(strtr($tokenB64, '-_', '+/') . str_repeat('=', (4 - strlen($tokenB64) % 4) % 4), true);
+    if (!is_string($decodedScope) || !is_string($decodedToken)) {
+        return false;
+    }
+    if (!hash_equals($scope, $decodedScope)) {
+        return false;
+    }
+
+    return $decodedToken;
 }

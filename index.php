@@ -63,7 +63,13 @@ if (($debugToken = app_query_scalar('_debug', 128)) !== null) {
             $rules = effective_rules($db, $link);
             if ($rules !== null) {
                 $detector = new BotDetector();
-                $eval = $detector->evaluate($rules, $fingerprint, isset($_COOKIE['cvk']));
+                $scopeKind = !empty($link['campaign_id']) ? 'campaign' : 'link';
+                $scopeId = !empty($link['campaign_id']) ? (int) $link['campaign_id'] : (int) $link['id'];
+                $visitorToken = app_query_scalar('_fv', 512) ?? '';
+                $signedVisitor = $visitorToken !== ''
+                    ? verify_visitor_token((string) ($_COOKIE['cvk'] ?? ''), visitor_scope_key($scopeKind, $scopeId))
+                    : false;
+                $eval = $detector->evaluate($rules, $fingerprint, is_string($signedVisitor) && hash_equals($signedVisitor, $visitorToken));
                 $payload['show_offer'] = $eval['allowed'];
                 $payload['reasons'] = $eval['reasons'];
                 $payload['detection'] = $detector->getResult();
@@ -101,23 +107,22 @@ if ($rules === null) {
     $needsFp = !empty($rules['require_screen_info'])
         || !empty($rules['allowed_resolutions']) || !empty($rules['blocked_resolutions'])
         || !empty($rules['single_visit_only']);
-    $tokenPresent = isset($_COOKIE['cvk']);
+    $scopeKind = !empty($link['campaign_id']) ? 'campaign' : 'link';
+    $scopeId = !empty($link['campaign_id']) ? (int) $link['campaign_id'] : (int) $link['id'];
+    $visitorToken = app_query_scalar('_fv', 512) ?? '';
+    $signedVisitor = $visitorToken !== ''
+        ? verify_visitor_token((string) ($_COOKIE['cvk'] ?? ''), visitor_scope_key($scopeKind, $scopeId))
+        : false;
+    $tokenPresent = is_string($signedVisitor) && hash_equals($signedVisitor, $visitorToken);
 
     if ($needsFp && $fingerprint === []) {
-        // Single-visit check happens on the first request (token already present?)
-        if (!empty($rules['single_visit_only']) && $tokenPresent) {
-            $detector = new BotDetector();
-            $detector->detect(['datacenter' => false, 'tor' => false]);
-            $detectionResult = $detector->getResult();
-            $evalResult = ['allowed' => false, 'reasons' => ['already_visited']];
-        } else {
-            // Serve the collection interstitial (JS fingerprint round-trip)
-            $base = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
-            $query = $_GET;
-            unset($query['_fph'], $query['_fv'], $query['_debug']);
-            serve_interstitial($base, $query);
-            exit;
-        }
+        // Signed tokens are only trusted once the JS token round-trip proves
+        // the browser still holds the same visitor token as the HttpOnly cookie.
+        $base = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+        $query = $_GET;
+        unset($query['_fph'], $query['_fv'], $query['_debug']);
+        serve_interstitial($base, $query);
+        exit;
     } else {
         $detector = new BotDetector();
         $evalResult = $detector->evaluate($rules, $fingerprint, $tokenPresent);
@@ -139,8 +144,8 @@ if ($rules === null) {
         }
 
         // Issue the visitor token on first completed fingerprint round-trip
-        if ($fingerprint !== [] && ($visitorToken = app_query_scalar('_fv', 512)) !== null) {
-            setcookie('cvk', $visitorToken, [
+        if ($fingerprint !== [] && $visitorToken !== '') {
+            setcookie('cvk', sign_visitor_token(visitor_scope_key($scopeKind, $scopeId), $visitorToken), [
                 'expires'  => time() + 86400 * 365,
                 'path'     => '/',
                 'secure'   => app_is_https(),

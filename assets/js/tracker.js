@@ -6,11 +6,27 @@
 (function () {
     'use strict';
 
+    function randomToken() {
+        try {
+            if (window.crypto && window.crypto.getRandomValues) {
+                var bytes = new Uint8Array(16);
+                window.crypto.getRandomValues(bytes);
+                var out = '';
+                for (var i = 0; i < bytes.length; i++) {
+                    out += bytes[i].toString(16).padStart(2, '0');
+                }
+                return out;
+            }
+        } catch (e) {}
+
+        return Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+    }
+
     function token() {
         try {
             var t = localStorage.getItem('cloak_vtoken');
             if (t) return t;
-            t = 'v' + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+            t = 'v' + randomToken();
             localStorage.setItem('cloak_vtoken', t);
             return t;
         } catch (e) {

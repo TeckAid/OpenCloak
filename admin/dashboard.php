@@ -36,23 +36,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 $campaignFilter = (int)($_GET['campaign'] ?? 0);
 $reasonFilter = trim((string)($_GET['reason'] ?? ''));
 $sourceFilter = trim((string)($_GET['source'] ?? ''));
+$ownerSql = 'COALESCE(l.user_id, c.user_id) = ?';
 
 // ---- Stats (prepared statements) ------------------------------------------------
 $stmt = $db->prepare("SELECT
     COUNT(*) AS total_links,
-    COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0) AS active_links,
-    COALESCE(SUM(total_hits), 0) AS total_hits,
-    COALESCE(SUM(offer_shows), 0) AS total_offers,
-    COALESCE(SUM(white_shows), 0) AS total_white
+    COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0) AS active_links
     FROM links WHERE user_id = ?");
 $stmt->execute([$userId]);
 $stats = $stmt->fetch();
+
+$stmt = $db->prepare("
+    SELECT COUNT(*) AS total_hits,
+           COALESCE(SUM(CASE WHEN h.shown_page = 'offer' THEN 1 ELSE 0 END), 0) AS total_offers,
+           COALESCE(SUM(CASE WHEN h.shown_page = 'white' THEN 1 ELSE 0 END), 0) AS total_white
+    FROM hit_log h
+    LEFT JOIN links l ON h.link_id = l.id
+    LEFT JOIN campaigns c ON h.campaign_id = c.id
+    WHERE {$ownerSql}");
+$stmt->execute([$userId]);
+$trafficStats = $stmt->fetch();
+$stats['total_hits'] = $trafficStats['total_hits'] ?? 0;
+$stats['total_offers'] = $trafficStats['total_offers'] ?? 0;
+$stats['total_white'] = $trafficStats['total_white'] ?? 0;
 
 $stmt = $db->prepare("SELECT COUNT(*) AS cnt FROM campaigns WHERE user_id = ?");
 $stmt->execute([$userId]);
 $campaignCount = (int)$stmt->fetch()['cnt'];
 
-$where = ["l.user_id = ?"];
+$where = [$ownerSql];
 $params = [$userId];
 if ($campaignFilter > 0) {
     $where[] = "h.campaign_id = ?";
@@ -97,7 +109,8 @@ $stmt = $db->prepare("
            COALESCE(SUM(CASE WHEN h.shown_page = 'white' THEN 1 ELSE 0 END), 0) AS blocked
     FROM hit_log h
     LEFT JOIN links l ON h.link_id = l.id
-    WHERE l.user_id = ? AND h.created_at >= datetime('now', '-7 days')
+    LEFT JOIN campaigns c ON h.campaign_id = c.id
+    WHERE {$ownerSql} AND h.created_at >= datetime('now', '-7 days')
     GROUP BY DATE(h.created_at) ORDER BY day");
 $stmt->execute([$userId]);
 $trend = $stmt->fetchAll();
@@ -106,7 +119,8 @@ $stmt = $db->prepare("
     SELECT reject_reason, COUNT(*) AS cnt
     FROM hit_log h
     LEFT JOIN links l ON h.link_id = l.id
-    WHERE l.user_id = ? AND h.reject_reason IS NOT NULL AND h.reject_reason != ''
+    LEFT JOIN campaigns c ON h.campaign_id = c.id
+    WHERE {$ownerSql} AND h.reject_reason IS NOT NULL AND h.reject_reason != ''
     GROUP BY reject_reason ORDER BY cnt DESC LIMIT 10");
 $stmt->execute([$userId]);
 $topReasons = $stmt->fetchAll();
@@ -118,7 +132,8 @@ $stmt = $db->prepare("
            COALESCE(SUM(CASE WHEN shown_page = 'white' THEN 1 ELSE 0 END), 0) AS white
     FROM hit_log h
     LEFT JOIN links l ON h.link_id = l.id
-    WHERE l.user_id = ? AND h.created_at >= datetime('now', '-7 days')
+    LEFT JOIN campaigns c ON h.campaign_id = c.id
+    WHERE {$ownerSql} AND h.created_at >= datetime('now', '-7 days')
     GROUP BY source ORDER BY total DESC LIMIT 15");
 $stmt->execute([$userId]);
 $topSources = $stmt->fetchAll();

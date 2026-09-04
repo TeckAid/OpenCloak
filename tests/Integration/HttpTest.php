@@ -1214,6 +1214,325 @@ final class HttpTest extends TestCase
         $this->assertFalse(str_contains($response['body'], 'http-equiv="refresh"'));
     }
 
+    public function test_generated_client_does_not_embed_admin_api_key(): void
+    {
+        $runtime = $this->createRuntimeApp(
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'owner', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'owner-api-key']);
+                $db->prepare("
+                    INSERT INTO campaigns (id, user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay)
+                    VALUES (1, 1, 'Verify Campaign', 1, 'https://offers.example/offer', '<p>white</p>', 'white', 403, '302', 0)
+                ")->execute();
+            }
+        );
+
+        try {
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $indexPhp = $this->fetchGeneratedClientIndex($runtime, $server['port'], 1);
+
+            $this->assertFalse(str_contains($indexPhp, 'owner-api-key'));
+            $this->assertFalse(str_contains($indexPhp, 'CLOAK_API_KEY'));
+            $this->assertTrue(str_contains($indexPhp, 'CLOAK_CLIENT_CREDENTIAL'));
+
+            $this->stopServer($server['process']);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_client_credentials_only_verify_assigned_campaign_and_are_forbidden_for_management(): void
+    {
+        $runtime = $this->createRuntimeApp(
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'owner', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'owner-api-key']);
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([2, 'other', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'other-api-key']);
+                $db->prepare("
+                    INSERT INTO campaigns (id, user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay)
+                    VALUES (1, 1, 'Verify Campaign', 1, 'https://offers.example/offer', '<p>white</p>', 'white', 403, '302', 0)
+                ")->execute();
+                $db->prepare("
+                    INSERT INTO campaigns (id, user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay)
+                    VALUES (2, 1, 'Other Campaign', 1, 'https://offers.example/other', '<p>white</p>', 'white', 403, '302', 0)
+                ")->execute();
+                $db->prepare("
+                    INSERT INTO campaigns (id, user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay)
+                    VALUES (9, 2, 'Other Tenant Campaign', 1, 'https://offers.example/tenant', '<p>white</p>', 'white', 403, '302', 0)
+                ")->execute();
+            }
+        );
+
+        try {
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $indexPhp = $this->fetchGeneratedClientIndex($runtime, $server['port'], 1);
+            $credential = $this->extractDefinedValue($indexPhp, 'CLOAK_CLIENT_CREDENTIAL');
+
+            $verifyOk = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/api/verify',
+                [
+                    'Authorization' => 'Bearer ' . $credential,
+                    'Content-Type' => 'application/json',
+                ],
+                $this->buildVerifyPayload(1)
+            );
+            $verifyOtherCampaign = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/api/verify',
+                [
+                    'Authorization' => 'Bearer ' . $credential,
+                    'Content-Type' => 'application/json',
+                ],
+                $this->buildVerifyPayload(2)
+            );
+            $verifyOtherTenant = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/api/verify',
+                [
+                    'Authorization' => 'Bearer ' . $credential,
+                    'Content-Type' => 'application/json',
+                ],
+                $this->buildVerifyPayload(9)
+            );
+            $management = $this->httpRequest(
+                $server['port'],
+                'GET',
+                '/api/campaigns',
+                ['Authorization' => 'Bearer ' . $credential]
+            );
+
+            $this->assertSame(200, $verifyOk['status']);
+            $this->assertSame(403, $verifyOtherCampaign['status']);
+            $this->assertSame(403, $verifyOtherTenant['status']);
+            $this->assertSame(403, $management['status']);
+
+            $this->stopServer($server['process']);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_revoked_and_expired_client_credentials_are_rejected(): void
+    {
+        $runtime = $this->createRuntimeApp(
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'owner', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'owner-api-key']);
+                $db->prepare("
+                    INSERT INTO campaigns (id, user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay)
+                    VALUES (1, 1, 'Verify Campaign', 1, 'https://offers.example/offer', '<p>white</p>', 'white', 403, '302', 0)
+                ")->execute();
+            }
+        );
+
+        try {
+            $db = new PDO('sqlite:' . $runtime['dbPath']);
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $revokedToken = $this->extractDefinedValue($this->fetchGeneratedClientIndex($runtime, $server['port'], 1), 'CLOAK_CLIENT_CREDENTIAL');
+            $db->exec("UPDATE client_credentials SET status = 'revoked', revoked_at = CURRENT_TIMESTAMP");
+            $revokedResponse = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/api/verify',
+                [
+                    'Authorization' => 'Bearer ' . $revokedToken,
+                    'Content-Type' => 'application/json',
+                ],
+                $this->buildVerifyPayload(1)
+            );
+
+            $expiredToken = $this->extractDefinedValue($this->fetchGeneratedClientIndex($runtime, $server['port'], 1), 'CLOAK_CLIENT_CREDENTIAL');
+            $db->exec("UPDATE client_credentials SET expires_at = datetime('now', '-1 hour')");
+            $expiredResponse = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/api/verify',
+                [
+                    'Authorization' => 'Bearer ' . $expiredToken,
+                    'Content-Type' => 'application/json',
+                ],
+                $this->buildVerifyPayload(1)
+            );
+
+            $this->assertSame(401, $revokedResponse['status']);
+            $this->assertSame(401, $expiredResponse['status']);
+
+            $this->stopServer($server['process']);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_generated_client_matches_direct_redirect_output(): void
+    {
+        [$direct, $client] = $this->exerciseDirectAndClientScenario([
+            'offer_url' => 'https://offers.example/redirect',
+            'redirect_type' => '303',
+        ]);
+
+        $this->assertSame(303, $direct['status']);
+        $this->assertSame($direct['status'], $client['status']);
+        $this->assertSame($direct['headers']['location'] ?? null, $client['headers']['location'] ?? null);
+    }
+
+    public function test_generated_client_matches_direct_iframe_output(): void
+    {
+        [$direct, $client] = $this->exerciseDirectAndClientScenario([
+            'offer_url' => 'https://offers.example/frame',
+            'offer_method' => 'iframe',
+        ]);
+
+        $this->assertSame(200, $direct['status']);
+        $this->assertSame($direct['status'], $client['status']);
+        $this->assertTrue(str_contains($direct['body'], '<iframe src="https://offers.example/frame"'));
+        $this->assertTrue(str_contains($client['body'], '<iframe src="https://offers.example/frame"'));
+    }
+
+    public function test_generated_client_matches_direct_meta_refresh_output(): void
+    {
+        [$direct, $client] = $this->exerciseDirectAndClientScenario([
+            'offer_url' => 'https://offers.example/meta',
+            'redirect_type' => 'meta',
+            'redirect_delay' => 2,
+        ]);
+
+        $this->assertSame(200, $direct['status']);
+        $this->assertSame($direct['status'], $client['status']);
+        $this->assertTrue(str_contains($direct['body'], 'http-equiv="refresh"'));
+        $this->assertTrue(str_contains($client['body'], 'http-equiv="refresh"'));
+        $this->assertTrue(str_contains($direct['body'], 'setTimeout(function(){window.location.href='));
+        $this->assertTrue(str_contains($client['body'], 'setTimeout(function(){window.location.href='));
+    }
+
+    public function test_generated_client_matches_direct_deny_output(): void
+    {
+        [$direct, $client] = $this->exerciseDirectAndClientScenario([
+            'required_url_params' => 'utm_source=*',
+            'white_page' => '<h1>Safe White Page</h1>',
+        ]);
+
+        $this->assertSame(200, $direct['status']);
+        $this->assertSame($direct['status'], $client['status']);
+        $this->assertTrue(str_contains($direct['body'], 'Safe White Page'));
+        $this->assertTrue(str_contains($client['body'], 'Safe White Page'));
+    }
+
+    public function test_dashboard_includes_campaign_only_verify_hits(): void
+    {
+        $runtime = $this->createRuntimeApp(
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'owner', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'owner-api-key']);
+                $db->prepare("
+                    INSERT INTO campaigns (id, user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay)
+                    VALUES (1, 1, 'Verify Campaign', 1, 'https://offers.example/offer', '<p>white</p>', 'white', 403, '302', 0)
+                ")->execute();
+            }
+        );
+
+        try {
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $cookie = $this->loginToAdmin($server['port']);
+            $indexPhp = $this->fetchGeneratedClientIndex($runtime, $server['port'], 1);
+            $credential = $this->extractDefinedValue($indexPhp, 'CLOAK_CLIENT_CREDENTIAL');
+
+            $verify = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/api/verify',
+                [
+                    'Authorization' => 'Bearer ' . $credential,
+                    'Content-Type' => 'application/json',
+                ],
+                $this->buildVerifyPayload(1, [
+                    'referer' => 'https://facebook.com/ad',
+                    'host' => 'landing.example',
+                ])
+            );
+            $dashboard = $this->httpRequest($server['port'], 'GET', '/admin/dashboard.php', ['Cookie' => $cookie]);
+
+            $this->assertSame(200, $verify['status']);
+            $this->assertSame(200, $dashboard['status']);
+            $this->assertTrue(str_contains($dashboard['body'], 'Verify Campaign'));
+            $this->assertTrue(str_contains($dashboard['body'], 'facebook'));
+
+            $this->stopServer($server['process']);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_generated_client_fails_closed_on_invalid_verify_response(): void
+    {
+        $stub = $this->startStubServer('not-json', 200, 'text/plain');
+
+        try {
+            $landing = $this->deployClientLanding(
+                $this->buildStubClientIndex('http://127.0.0.1:' . $stub['port'] . '/verify.php'),
+                file_get_contents(APP_ROOT . '/assets/js/tracker.js') ?: ''
+            );
+
+            try {
+                $response = $this->httpRequest($landing['port'], 'GET', '/index.php');
+
+                $this->assertSame(502, $response['status']);
+                $this->assertTrue(str_contains($response['body'], 'Verification failed'));
+            } finally {
+                $this->stopServer($landing['process']);
+                $this->deleteTree($landing['root']);
+            }
+        } finally {
+            $this->stopServer($stub['process']);
+            $this->deleteTree($stub['root']);
+        }
+    }
+
+    public function test_generated_client_blocks_local_money_page_path_traversal(): void
+    {
+        $stub = $this->startStubServer(json_encode([
+            'allowed' => true,
+            'pass_target' => '../secret.html',
+            'offer_method' => 'redirect',
+            'forward_utms' => 0,
+            'reject_mode' => 'white',
+            'reject_code' => 403,
+            'reject_target' => '',
+            'redirect_type' => '302',
+            'redirect_delay' => 0,
+        ], JSON_UNESCAPED_SLASHES));
+
+        try {
+            $landing = $this->deployClientLanding(
+                $this->buildStubClientIndex('http://127.0.0.1:' . $stub['port'] . '/verify.php'),
+                file_get_contents(APP_ROOT . '/assets/js/tracker.js') ?: '',
+                [
+                    'secret.html' => '<h1>Leaked Secret</h1>',
+                ]
+            );
+
+            try {
+                $response = $this->httpRequest($landing['port'], 'GET', '/index.php');
+
+                $this->assertSame(404, $response['status']);
+                $this->assertFalse(str_contains($response['body'], 'Leaked Secret'));
+            } finally {
+                $this->stopServer($landing['process']);
+                $this->deleteTree($landing['root']);
+            }
+        } finally {
+            $this->stopServer($stub['process']);
+            $this->deleteTree($stub['root']);
+        }
+    }
+
     private function requestSeeded(
         string $method,
         string $path,
@@ -1232,6 +1551,234 @@ final class HttpTest extends TestCase
         }
 
         return $response;
+    }
+
+    /**
+     * @param array<string, mixed> $campaignOverrides
+     * @return array{0: array{status:int,headers:array<string,mixed>,body:string},1: array{status:int,headers:array<string,mixed>,body:string}}
+     */
+    private function exerciseDirectAndClientScenario(array $campaignOverrides): array
+    {
+        $runtime = $this->createRuntimeApp(
+            function (PDO $db) use ($campaignOverrides): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'owner', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'owner-api-key']);
+
+                $defaults = [
+                    'name' => 'Parity Campaign',
+                    'is_active' => 1,
+                    'offer_url' => 'https://offers.example/default',
+                    'white_page' => '<p>Safe White Page</p>',
+                    'reject_mode' => 'white',
+                    'reject_code' => 403,
+                    'redirect_type' => '302',
+                    'redirect_delay' => 0,
+                    'offer_method' => 'redirect',
+                    'required_url_params' => '',
+                ];
+                $campaign = array_merge($defaults, $campaignOverrides);
+
+                $db->prepare("
+                    INSERT INTO campaigns (id, user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay, offer_method, required_url_params)
+                    VALUES (1, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ")->execute([
+                    $campaign['name'],
+                    $campaign['is_active'],
+                    $campaign['offer_url'],
+                    $campaign['white_page'],
+                    $campaign['reject_mode'],
+                    $campaign['reject_code'],
+                    $campaign['redirect_type'],
+                    $campaign['redirect_delay'],
+                    $campaign['offer_method'],
+                    $campaign['required_url_params'],
+                ]);
+                $db->prepare("
+                    INSERT INTO links (id, user_id, slug, name, campaign_id, offer_url, white_page, is_active, redirect_type, redirect_delay)
+                    VALUES (1, 1, 'promo', 'Promo', 1, ?, ?, 1, ?, ?)
+                ")->execute([
+                    $campaign['offer_url'],
+                    $campaign['white_page'],
+                    $campaign['redirect_type'],
+                    $campaign['redirect_delay'],
+                ]);
+            }
+        );
+
+        try {
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $direct = $this->httpRequest(
+                $server['port'],
+                'GET',
+                '/promo',
+                [
+                    'User-Agent' => 'Mozilla/5.0',
+                    'Accept' => 'text/html',
+                    'Accept-Language' => 'en-US',
+                ]
+            );
+
+            $indexPhp = $this->fetchGeneratedClientIndex($runtime, $server['port'], 1);
+            $landing = $this->deployClientLanding(
+                $this->rewriteClientVerifyUrl($indexPhp, 'http://127.0.0.1:' . $server['port'] . '/api/verify'),
+                file_get_contents(APP_ROOT . '/assets/js/tracker.js') ?: ''
+            );
+
+            try {
+                $client = $this->httpRequest(
+                    $landing['port'],
+                    'GET',
+                    '/index.php',
+                    [
+                        'User-Agent' => 'Mozilla/5.0',
+                        'Accept' => 'text/html',
+                        'Accept-Language' => 'en-US',
+                    ]
+                );
+            } finally {
+                $this->stopServer($landing['process']);
+                $this->deleteTree($landing['root']);
+            }
+
+            $this->stopServer($server['process']);
+
+            return [$direct, $client];
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    private function fetchGeneratedClientIndex(array $runtime, int $appPort, int $campaignId): string
+    {
+        $this->setRuntimeBaseUrl($runtime, $appPort);
+        $cookie = $this->loginToAdmin($appPort);
+        $page = $this->httpRequest($appPort, 'GET', '/admin/client.php?campaign_id=' . $campaignId, ['Cookie' => $cookie]);
+
+        $this->assertSame(200, $page['status']);
+
+        return $this->extractTextareaValue($page['body'], 'client-index');
+    }
+
+    private function setRuntimeBaseUrl(array $runtime, int $appPort): void
+    {
+        $this->writeConfigOverride(
+            $runtime['docroot'] . '/config.local.php',
+            $runtime['dbPath'],
+            $runtime['runtimeState'] . DIRECTORY_SEPARATOR . 'logs' . DIRECTORY_SEPARATOR,
+            [
+                'APP_KEY' => bin2hex(random_bytes(32)),
+                'APP_BASE_URL' => 'http://127.0.0.1:' . $appPort,
+                'SYSTEM_HOSTS' => ['127.0.0.1'],
+            ]
+        );
+    }
+
+    private function extractTextareaValue(string $body, string $id): string
+    {
+        $pattern = '/<textarea[^>]*id="' . preg_quote($id, '/') . '"[^>]*>(.*?)<\/textarea>/s';
+        if (!preg_match($pattern, $body, $matches)) {
+            throw new RuntimeException("Unable to locate textarea {$id}");
+        }
+
+        return html_entity_decode($matches[1], ENT_QUOTES);
+    }
+
+    private function extractDefinedValue(string $php, string $constantName): string
+    {
+        $pattern = '/define\(\'' . preg_quote($constantName, '/') . '\', \'([^\']*)\'\);/';
+        if (!preg_match($pattern, $php, $matches)) {
+            throw new RuntimeException("Unable to locate constant {$constantName}");
+        }
+
+        return $matches[1];
+    }
+
+    /**
+     * @param array<string, mixed> $overrides
+     */
+    private function buildVerifyPayload(int $campaignId, array $overrides = []): string
+    {
+        $payload = array_merge([
+            'campaign_id' => $campaignId,
+            'ip' => '198.51.100.10',
+            'user_agent' => 'Mozilla/5.0',
+            'referer' => '',
+            'language' => 'en-US',
+            'accept' => 'text/html',
+            'host' => 'landing.example',
+            'params' => [],
+            'fingerprint' => [],
+            'token_present' => false,
+        ], $overrides);
+
+        return json_encode($payload, JSON_UNESCAPED_SLASHES) ?: '{}';
+    }
+
+    /**
+     * @param array<string, string> $extraFiles
+     * @return array{root:string,port:int,process:resource}
+     */
+    private function deployClientLanding(string $indexPhp, string $trackerJs, array $extraFiles = []): array
+    {
+        $root = $this->tempDir('cloaking-client-');
+        file_put_contents($root . '/index.php', $indexPhp);
+        file_put_contents($root . '/tracker.min.js', $trackerJs);
+        file_put_contents($root . '/router.php', "<?php\nreturn false;\n");
+        foreach ($extraFiles as $name => $contents) {
+            file_put_contents($root . '/' . $name, $contents);
+        }
+
+        $port = $this->findFreePort();
+        $process = $this->startServer($root, $port);
+
+        return [
+            'root' => $root,
+            'port' => $port,
+            'process' => $process,
+        ];
+    }
+
+    private function rewriteClientVerifyUrl(string $indexPhp, string $verifyUrl): string
+    {
+        return preg_replace(
+            "/define\\('CLOAK_VERIFY_URL', '.*?'\\);/",
+            "define('CLOAK_VERIFY_URL', '" . addslashes($verifyUrl) . "');",
+            $indexPhp
+        ) ?: $indexPhp;
+    }
+
+    private function buildStubClientIndex(string $verifyUrl): string
+    {
+        $template = file_get_contents(APP_ROOT . '/includes/client_template.php.txt');
+        if ($template === false) {
+            throw new RuntimeException('Unable to load client template');
+        }
+
+        return strtr($template, [
+            '{{CLIENT_CREDENTIAL}}' => 'stub-client-credential',
+            '{{CAMPAIGN_ID}}' => '1',
+            '{{VERIFY_URL}}' => $verifyUrl,
+        ]);
+    }
+
+    /**
+     * @return array{root:string,port:int,process:resource}
+     */
+    private function startStubServer(string $body, int $status = 200, string $contentType = 'application/json'): array
+    {
+        $root = $this->tempDir('cloaking-stub-');
+        $script = "<?php\nhttp_response_code(" . $status . ");\nheader('Content-Type: " . addslashes($contentType) . "');\necho " . var_export($body, true) . ";\n";
+        file_put_contents($root . '/verify.php', $script);
+        file_put_contents($root . '/router.php', "<?php\nreturn false;\n");
+
+        $port = $this->findFreePort();
+        $process = $this->startServer($root, $port);
+
+        return [
+            'root' => $root,
+            'port' => $port,
+            'process' => $process,
+        ];
     }
 
     /**
@@ -1257,6 +1804,7 @@ final class HttpTest extends TestCase
         $this->copyTree(APP_ROOT . '/includes', $docroot . '/includes');
         $this->copyTree(APP_ROOT . '/api', $docroot . '/api');
         $this->copyTree(APP_ROOT . '/admin', $docroot . '/admin');
+        $this->copyTree(APP_ROOT . '/assets', $docroot . '/assets');
         $this->copyFile(APP_ROOT . '/config.php', $docroot . '/config.php');
         $this->copyFile(APP_ROOT . '/index.php', $docroot . '/index.php');
         $this->copyFile(APP_ROOT . '/dev-router.php', $docroot . '/dev-router.php');
