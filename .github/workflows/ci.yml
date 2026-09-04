@@ -29,6 +29,11 @@ jobs:
       - name: Run tests
         run: php tests/run.php
 
+      - name: Verify pinned production image references
+        run: |
+          chmod +x tests/Integration/check_pinned_images.sh
+          tests/Integration/check_pinned_images.sh
+
       - name: Validate Docker Compose
         run: docker compose config --quiet
 

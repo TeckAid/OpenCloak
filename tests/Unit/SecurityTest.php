@@ -75,6 +75,38 @@ PHP);
         $this->assertFalse($value);
     }
 
+    public function test_docker_proxy_config_accepts_forwarded_https_from_trusted_caddy_subnet(): void
+    {
+        $value = $this->runDockerConfigSecurityProbe(<<<'PHP'
+$_SERVER['REMOTE_ADDR'] = '172.23.0.2';
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '198.51.100.7';
+$_SERVER['HTTP_X_FORWARDED_PROTO'] = 'https';
+return [
+    'client_ip' => app_client_ip(),
+    'is_https' => app_is_https(),
+];
+PHP);
+
+        $this->assertSame('198.51.100.7', $value['client_ip']);
+        $this->assertTrue($value['is_https']);
+    }
+
+    public function test_docker_proxy_config_rejects_forwarded_https_from_untrusted_peer(): void
+    {
+        $value = $this->runDockerConfigSecurityProbe(<<<'PHP'
+$_SERVER['REMOTE_ADDR'] = '172.23.0.10';
+$_SERVER['HTTP_X_FORWARDED_FOR'] = '203.0.113.11';
+$_SERVER['HTTP_X_FORWARDED_PROTO'] = 'https';
+return [
+    'client_ip' => app_client_ip(),
+    'is_https' => app_is_https(),
+];
+PHP);
+
+        $this->assertSame('172.23.0.10', $value['client_ip']);
+        $this->assertFalse($value['is_https']);
+    }
+
     public function test_app_normalize_host_rejects_malformed_values(): void
     {
         $value = $this->runSecurityProbe(<<<'PHP'
@@ -205,6 +237,48 @@ PHP;
         $decoded = json_decode(implode("\n", $output), true);
         if (json_last_error() !== JSON_ERROR_NONE) {
             throw new RuntimeException('Config probe returned invalid JSON: ' . implode("\n", $output));
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * @return mixed
+     */
+    private function runDockerConfigSecurityProbe(string $body)
+    {
+        $runtimeDir = $this->tempDir('cloaking-docker-config-');
+        $scriptPath = $runtimeDir . DIRECTORY_SEPARATOR . 'probe.php';
+
+        $script = <<<PHP
+<?php
+require_once %s;
+require_once %s;
+\$result = (static function () {
+%s
+})();
+echo json_encode(\$result, JSON_UNESCAPED_SLASHES);
+PHP;
+
+        file_put_contents($scriptPath, sprintf(
+            $script,
+            var_export(APP_ROOT . '/docker/config.local.php', true),
+            var_export(APP_ROOT . '/includes/security.php', true),
+            $body
+        ));
+
+        $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($scriptPath);
+        $output = [];
+        $exitCode = 0;
+        exec($command . ' 2>&1', $output, $exitCode);
+
+        if ($exitCode !== 0) {
+            throw new RuntimeException('Docker config probe failed: ' . implode("\n", $output));
+        }
+
+        $decoded = json_decode(implode("\n", $output), true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new RuntimeException('Docker config probe returned invalid JSON: ' . implode("\n", $output));
         }
 
         return $decoded;

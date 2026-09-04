@@ -185,6 +185,42 @@ assert_status_only() {
   rm -f "${body_file}"
 }
 
+assert_cookie_attribute() {
+  local label="$1"
+  local url="$2"
+  local expected="$3"
+  shift 3
+  local headers_file
+
+  headers_file="$(mktemp)"
+  curl -ksS -D "${headers_file}" -o /dev/null "$@" "${url}"
+
+  if ! grep -i '^Set-Cookie: cloaksess=' "${headers_file}" >/dev/null 2>&1; then
+    echo "${label}: expected cloaksess cookie in response headers" >&2
+    cat "${headers_file}" >&2
+    rm -f "${headers_file}"
+    exit 1
+  fi
+
+  if [[ "${expected}" == present ]]; then
+    if ! grep -i '^Set-Cookie: cloaksess=.*;\s*Secure\b' "${headers_file}" >/dev/null 2>&1; then
+      echo "${label}: expected cloaksess cookie to include Secure" >&2
+      cat "${headers_file}" >&2
+      rm -f "${headers_file}"
+      exit 1
+    fi
+  else
+    if grep -i '^Set-Cookie: cloaksess=.*;\s*Secure\b' "${headers_file}" >/dev/null 2>&1; then
+      echo "${label}: expected cloaksess cookie to omit Secure" >&2
+      cat "${headers_file}" >&2
+      rm -f "${headers_file}"
+      exit 1
+    fi
+  fi
+
+  rm -f "${headers_file}"
+}
+
 run_fixture_suite() {
   local label="$1"
   local dockerfile="$2"
@@ -224,6 +260,8 @@ run_fixture_suite() {
 }
 
 run_caddy_suite() {
+  local web_container_id
+
   ACTIVE_COMPOSE_PROJECT="cloaking-int-${RANDOM}${RANDOM}"
 
   (
@@ -232,9 +270,28 @@ run_caddy_suite() {
   )
 
   wait_for_http "https://app.localhost:18443/healthz" -k --resolve app.localhost:18443:127.0.0.1
+  web_container_id="$(
+    cd "${REPO_DIR}" &&
+    docker compose -p "${ACTIVE_COMPOSE_PROJECT}" ps -q web
+  )"
 
   assert_status_only "caddy-unknown-host" "http://127.0.0.1:18080/healthz" "421" "ok" -H 'Host: bad.localhost'
   assert_static_healthz "caddy-allowed-host" "https://app.localhost:18443/healthz" -k --resolve app.localhost:18443:127.0.0.1
+  assert_cookie_attribute "caddy-trusted-https" "https://app.localhost:18443/admin/login.php" present --resolve app.localhost:18443:127.0.0.1
+  docker exec "${web_container_id}" curl -sS -D /tmp/cloaking-direct-headers -o /dev/null \
+    -H 'Host: app.localhost' \
+    -H 'X-Forwarded-Proto: https' \
+    http://127.0.0.1/admin/login.php >/dev/null
+  if ! docker exec "${web_container_id}" grep -i '^Set-Cookie: cloaksess=' /tmp/cloaking-direct-headers >/dev/null 2>&1; then
+    echo "caddy-untrusted-direct: expected cloaksess cookie from direct web request" >&2
+    docker exec "${web_container_id}" cat /tmp/cloaking-direct-headers >&2
+    exit 1
+  fi
+  if docker exec "${web_container_id}" grep -i '^Set-Cookie: cloaksess=.*;\s*Secure\b' /tmp/cloaking-direct-headers >/dev/null 2>&1; then
+    echo "caddy-untrusted-direct: direct web request incorrectly trusted forwarded https" >&2
+    docker exec "${web_container_id}" cat /tmp/cloaking-direct-headers >&2
+    exit 1
+  fi
   assert_blocked "caddy-allowed-host" "https://app.localhost:18443/install.php" "CLI installer" -k --resolve app.localhost:18443:127.0.0.1
 }
 

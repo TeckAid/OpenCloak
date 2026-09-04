@@ -1,4 +1,8 @@
-ARG PHP_APACHE_IMAGE=php:8.4-apache-bookworm
+#
+# Update pinned base images with:
+#   docker buildx imagetools inspect php:8.4-apache-bookworm
+# Then replace the digest below with the new OCI index digest.
+ARG PHP_APACHE_IMAGE=docker.io/library/php:8.4-apache-bookworm@sha256:25d70665acee86d7231af7bc5464794abd14585f80210f85f22dfb0713ac8ec7
 FROM ${PHP_APACHE_IMAGE}
 
 RUN apt-get update \

@@ -84,3 +84,73 @@ The initial repository state matched the Task 7 failure conditions:
 - The compose fixture defaults to `docker/config.local.php` with local host
   allowlisting for `app.localhost` and `cloaks.localhost`. Production operators
   should override `CLOAKING_CONFIG_PATH` with their real read-only config file.
+
+## Fix round 1
+
+Date: 2026-09-04
+Parent commit before fix: `22f5620`
+
+### Findings addressed
+
+1. The default Caddy-backed compose deployment did not define any
+   `TRUSTED_PROXIES`, so forwarded HTTPS and client IP headers from the edge
+   proxy were not explicitly trusted.
+2. The production Docker and Caddy references were still mutable tags rather
+   than digest-pinned image references.
+
+### Changes made
+
+- Added deterministic compose IPAM for both networks:
+  - `app`: `172.23.0.0/24`
+  - `edge`: `172.24.0.0/24`
+- Assigned fixed service addresses on the internal app network:
+  - `edge`: `172.23.0.2`
+  - `web`: `172.23.0.10`
+- Updated `docker/config.local.php` so the default mounted config trusts only
+  the Caddy app-network address via `TRUSTED_PROXIES = ['172.23.0.2/32']`.
+- Added focused proxy trust coverage in `tests/Unit/SecurityTest.php`:
+  - forwarded HTTPS and forwarded client IP are accepted from `172.23.0.2`
+  - another peer (`172.23.0.10`) with spoofed forwarded headers is not trusted
+- Extended `tests/Integration/web_server_test.sh` with a Caddy cookie-path
+  assertion so HTTPS through the edge must set a `Secure` admin session cookie,
+  while a direct spoofed `X-Forwarded-Proto` request to the web container must
+  not.
+- Pinned image references to immutable OCI index digests:
+  - `docker.io/library/php:8.4-apache-bookworm@sha256:25d70665acee86d7231af7bc5464794abd14585f80210f85f22dfb0713ac8ec7`
+  - `docker.io/library/php:8.4-fpm-bookworm@sha256:075b11566518bfa979bb9f2fe2e5359148326d659b15a2f414c2c305a0479a4e`
+  - `docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d`
+- Documented the refresh procedure inline with `docker buildx imagetools inspect`
+  comments and added `tests/Integration/check_pinned_images.sh`.
+- Updated CI to fail early when pinned image references are not present before
+  attempting compose validation or image builds.
+
+### Fresh verification evidence
+
+Commands run after the fix:
+
+- `php tests/run.php`
+  - Result: PASS
+- `bash tests/Integration/check_pinned_images.sh`
+  - Result: PASS
+- `php -l docker/config.local.php`
+  - Result: PASS
+- `bash -n tests/Integration/check_pinned_images.sh`
+  - Result: PASS
+- `bash -n tests/Integration/web_server_test.sh`
+  - Result: PASS
+- `docker compose config --quiet`
+  - Result: PASS
+- `git diff --check`
+  - Result: PASS
+- `tests/Integration/web_server_test.sh caddy`
+  - Result: SKIP
+  - Output: `SKIP: Docker daemon unavailable; skipping caddy integration checks.`
+- `docker build --pull --file Dockerfile --tag cloaking:task7-fix1 .`
+  - Result: BLOCKED by environment
+  - Output: `failed to connect to the docker API at unix:///Users/nasir/.docker/run/docker.sock`
+
+### Remaining concern after fix round 1
+
+- The new Caddy runtime assertion is implemented but not exercised on this host
+  because Docker daemon access is still unavailable. CI or another Docker host
+  still needs to provide the first live execution evidence for that path.

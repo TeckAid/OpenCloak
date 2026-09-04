@@ -1,4 +1,8 @@
-ARG PHP_FPM_IMAGE=php:8.4-fpm-bookworm
+#
+# Update pinned base images with:
+#   docker buildx imagetools inspect php:8.4-fpm-bookworm
+# Then replace the digest below with the new OCI index digest.
+ARG PHP_FPM_IMAGE=docker.io/library/php:8.4-fpm-bookworm@sha256:075b11566518bfa979bb9f2fe2e5359148326d659b15a2f414c2c305a0479a4e
 FROM ${PHP_FPM_IMAGE}
 
 RUN apt-get update \

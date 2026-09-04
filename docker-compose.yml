@@ -4,7 +4,8 @@ services:
       context: .
       dockerfile: Dockerfile
       args:
-        PHP_APACHE_IMAGE: php:8.4-apache-bookworm
+        # Refresh with: docker buildx imagetools inspect php:8.4-apache-bookworm
+        PHP_APACHE_IMAGE: docker.io/library/php:8.4-apache-bookworm@sha256:25d70665acee86d7231af7bc5464794abd14585f80210f85f22dfb0713ac8ec7
     expose:
       - "80"
     volumes:
@@ -25,7 +26,8 @@ services:
       - /var/run/apache2
       - /var/lock/apache2
     networks:
-      - app
+      app:
+        ipv4_address: 172.23.0.10
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1/healthz"]
       interval: 30s
@@ -43,7 +45,8 @@ services:
         max-file: "3"
 
   edge:
-    image: caddy:2.10-alpine
+    # Refresh with: docker buildx imagetools inspect caddy:2.10-alpine
+    image: docker.io/library/caddy:2.10-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     depends_on:
       web:
         condition: service_healthy
@@ -63,8 +66,10 @@ services:
         target: /config
     restart: unless-stopped
     networks:
-      - app
-      - edge
+      app:
+        ipv4_address: 172.23.0.2
+      edge:
+        ipv4_address: 172.24.0.2
     pids_limit: 128
     mem_limit: 256m
     security_opt:
@@ -78,7 +83,13 @@ services:
 networks:
   app:
     internal: true
+    ipam:
+      config:
+        - subnet: 172.23.0.0/24
   edge:
+    ipam:
+      config:
+        - subnet: 172.24.0.0/24
 
 volumes:
   caddy_data:

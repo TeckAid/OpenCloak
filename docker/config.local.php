@@ -10,3 +10,6 @@ define('SYSTEM_HOSTS', [
     'localhost',
     '127.0.0.1',
 ]);
+define('TRUSTED_PROXIES', [
+    '172.23.0.2/32',
+]);
