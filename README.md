@@ -62,7 +62,7 @@ Recommended host layout on Hetzner:
 
 1. Create `/srv/cloaking/runtime`, `/srv/cloaking/backups`, and `/srv/cloaking/config`
 2. Copy [ops/config.local.php.example](/Users/nasir/Documents/GitHub/Cloaking/ops/config.local.php.example) to `/srv/cloaking/config/config.local.php` and set the real hostname
-3. Bind-mount `/srv/cloaking/runtime` to `/var/www/html/data`, `/srv/cloaking/logs` to `/var/www/html/logs`, and `/srv/cloaking/config/config.local.php` to `/var/www/html/config.local.php`
+3. Keep the runtime paths in that config aligned with the paths your operational scripts use; the backup workflow now rejects missing or mismatched deployment config
 4. Expose only the Caddy edge on `80/tcp` and `443/tcp`
 5. Keep the Docker network between Caddy and PHP private
 
@@ -75,6 +75,10 @@ bash ops/backup_sqlite.sh \
   --config=/srv/cloaking/config/config.local.php \
   --output=/srv/cloaking/backups/$(date -u +%Y%m%dT%H%M%SZ)
 ```
+
+The backup command fails closed if `--config` is omitted, unreadable, or points
+at different runtime paths than the database and app key you asked it to back
+up.
 
 Then rehearse that backup with:
 
@@ -99,6 +103,10 @@ Use [ops/Caddyfile.example](/Users/nasir/Documents/GitHub/Cloaking/ops/Caddyfile
 5. Reload Caddy after adding each new custom domain so it can complete ACME for that hostname
 
 Custom-domain certificates are not automatic unless the hostname is present in the active Caddy config and already resolves to the server. Add the hostname to Caddy first, confirm DNS, then reload Caddy to mint the certificate before sending traffic.
+
+When you store restore evidence in git, keep it evidence-only: summaries,
+redacted smoke outputs, and checksum manifests are fine; committed SQLite files,
+app keys, and reusable runtime configs are not.
 
 ### Local development
 

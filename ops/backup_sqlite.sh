@@ -57,10 +57,6 @@ if [[ -z "${app_key_path}" ]]; then
     app_key_path="$(dirname "${db_path}")/app.key"
 fi
 
-if [[ -z "${config_path}" ]]; then
-    config_path="${app_root}/config.local.php"
-fi
-
 if [[ ! -f "${db_path}" ]]; then
     echo "Database file not found: ${db_path}" >&2
     exit 1
@@ -68,6 +64,17 @@ fi
 
 if [[ ! -f "${app_key_path}" ]]; then
     echo "App key file not found: ${app_key_path}" >&2
+    exit 1
+fi
+
+if [[ -z "${config_path}" ]]; then
+    echo "--config is required." >&2
+    usage >&2
+    exit 1
+fi
+
+if [[ ! -r "${config_path}" ]]; then
+    echo "Deployment config is missing or unreadable: ${config_path}" >&2
     exit 1
 fi
 
@@ -103,12 +110,47 @@ $db->exec("VACUUM INTO {$quoted}");
 PHP
 
 cp "${app_key_path}" "${backup_key}"
+cp "${config_path}" "${backup_config}"
 
-if [[ -f "${config_path}" ]]; then
-    cp "${config_path}" "${backup_config}"
-else
-    printf '%s\n' '<?php' '// no local config file was present during backup' > "${backup_config}"
-fi
+SOURCE_DB="${db_path}" SOURCE_KEY="${app_key_path}" CONFIG_PATH="${config_path}" php <<'PHP'
+<?php
+$sourceDb = (string) getenv('SOURCE_DB');
+$sourceKey = (string) getenv('SOURCE_KEY');
+$configPath = (string) getenv('CONFIG_PATH');
+
+require $configPath;
+
+foreach (['APP_RUNTIME_DIR', 'DB_PATH', 'LOG_PATH', 'APP_BASE_URL', 'SYSTEM_HOSTS', 'TRUSTED_PROXIES'] as $constant) {
+    if (!defined($constant)) {
+        fwrite(STDERR, "Deployment config must define {$constant}.\n");
+        exit(1);
+    }
+}
+
+if (!is_array(SYSTEM_HOSTS) || SYSTEM_HOSTS === []) {
+    fwrite(STDERR, "Deployment config must define at least one SYSTEM_HOSTS entry.\n");
+    exit(1);
+}
+
+if (!is_array(TRUSTED_PROXIES) || TRUSTED_PROXIES === []) {
+    fwrite(STDERR, "Deployment config must define at least one TRUSTED_PROXIES entry.\n");
+    exit(1);
+}
+
+$normalizedSourceDb = str_replace('\\', '/', $sourceDb);
+$normalizedConfigDb = str_replace('\\', '/', (string) DB_PATH);
+if ($normalizedConfigDb !== $normalizedSourceDb) {
+    fwrite(STDERR, "Deployment config DB_PATH does not match --db.\n");
+    exit(1);
+}
+
+$expectedKeyPath = rtrim(str_replace('\\', '/', (string) APP_RUNTIME_DIR), '/') . '/app.key';
+$normalizedSourceKey = str_replace('\\', '/', $sourceKey);
+if ($expectedKeyPath !== $normalizedSourceKey) {
+    fwrite(STDERR, "Deployment config APP_RUNTIME_DIR does not match --app-key.\n");
+    exit(1);
+}
+PHP
 
 SOURCE_DB="${db_path}" BACKUP_DB="${backup_db}" SOURCE_KEY="${app_key_path}" BACKUP_KEY="${backup_key}" CONFIG_PATH="${config_path}" METADATA_PATH="${metadata_path}" php <<'PHP'
 <?php
@@ -134,16 +176,14 @@ $configSnapshot = [
     'log_path' => null,
 ];
 
-if (is_file($configPath)) {
-    require $configPath;
-    $configSnapshot = [
-        'app_base_url' => defined('APP_BASE_URL') ? APP_BASE_URL : null,
-        'system_hosts' => defined('SYSTEM_HOSTS') && is_array(SYSTEM_HOSTS) ? array_values(SYSTEM_HOSTS) : [],
-        'trusted_proxies' => defined('TRUSTED_PROXIES') && is_array(TRUSTED_PROXIES) ? array_values(TRUSTED_PROXIES) : [],
-        'runtime_dir' => defined('APP_RUNTIME_DIR') ? APP_RUNTIME_DIR : null,
-        'log_path' => defined('LOG_PATH') ? LOG_PATH : null,
-    ];
-}
+require $configPath;
+$configSnapshot = [
+    'app_base_url' => defined('APP_BASE_URL') ? APP_BASE_URL : null,
+    'system_hosts' => defined('SYSTEM_HOSTS') && is_array(SYSTEM_HOSTS) ? array_values(SYSTEM_HOSTS) : [],
+    'trusted_proxies' => defined('TRUSTED_PROXIES') && is_array(TRUSTED_PROXIES) ? array_values(TRUSTED_PROXIES) : [],
+    'runtime_dir' => defined('APP_RUNTIME_DIR') ? APP_RUNTIME_DIR : null,
+    'log_path' => defined('LOG_PATH') ? LOG_PATH : null,
+];
 
 $backup = new PDO('sqlite:' . $backupDb);
 $backup->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);

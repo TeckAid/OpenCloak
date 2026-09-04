@@ -107,6 +107,15 @@ PHP);
         $this->assertFalse($value['is_https']);
     }
 
+    public function test_production_config_example_trusts_the_deterministic_caddy_edge_address(): void
+    {
+        $value = $this->runConfigFileProbe(APP_ROOT . '/ops/config.local.php.example', <<<'PHP'
+return TRUSTED_PROXIES;
+PHP);
+
+        $this->assertSame(['172.23.0.2/32'], $value);
+    }
+
     public function test_app_normalize_host_rejects_malformed_values(): void
     {
         $value = $this->runSecurityProbe(<<<'PHP'
@@ -279,6 +288,46 @@ PHP;
         $decoded = json_decode(implode("\n", $output), true);
         if (json_last_error() !== JSON_ERROR_NONE) {
             throw new RuntimeException('Docker config probe returned invalid JSON: ' . implode("\n", $output));
+        }
+
+        return $decoded;
+    }
+
+    /**
+     * @return mixed
+     */
+    private function runConfigFileProbe(string $configPath, string $body)
+    {
+        $runtimeDir = $this->tempDir('cloaking-config-file-');
+        $scriptPath = $runtimeDir . DIRECTORY_SEPARATOR . 'probe.php';
+
+        $script = <<<PHP
+<?php
+require_once %s;
+\$result = (static function () {
+%s
+})();
+echo json_encode(\$result, JSON_UNESCAPED_SLASHES);
+PHP;
+
+        file_put_contents($scriptPath, sprintf(
+            $script,
+            var_export($configPath, true),
+            $body
+        ));
+
+        $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($scriptPath);
+        $output = [];
+        $exitCode = 0;
+        exec($command . ' 2>&1', $output, $exitCode);
+
+        if ($exitCode !== 0) {
+            throw new RuntimeException('Config file probe failed: ' . implode("\n", $output));
+        }
+
+        $decoded = json_decode(implode("\n", $output), true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new RuntimeException('Config file probe returned invalid JSON: ' . implode("\n", $output));
         }
 
         return $decoded;

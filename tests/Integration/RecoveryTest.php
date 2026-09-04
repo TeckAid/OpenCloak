@@ -23,6 +23,7 @@ final class RecoveryTest extends TestCase
             $this->assertSame($fixture['dbPath'], $metadata['source']['db_path'] ?? null);
             $this->assertSame('https://app.example.test', $metadata['config']['app_base_url'] ?? null);
             $this->assertSame(['127.0.0.1', 'app.example.test'], $metadata['config']['system_hosts'] ?? null);
+            $this->assertSame(['172.23.0.2/32'], $metadata['config']['trusted_proxies'] ?? null);
         } finally {
             $this->deleteTree($fixture['root']);
             $this->deleteTree($backupDir);
@@ -48,6 +49,60 @@ final class RecoveryTest extends TestCase
             $this->assertSame(
                 hash_file('sha256', $fixture['appKeyPath']),
                 $metadata['artifacts']['app_key']['sha256'] ?? null
+            );
+        } finally {
+            $this->deleteTree($fixture['root']);
+            $this->deleteTree($backupDir);
+        }
+    }
+
+    public function test_backup_script_rejects_missing_config_argument(): void
+    {
+        $fixture = $this->createRecoveryFixture();
+        $backupDir = $this->tempDir('cloaking-backup-missing-config-');
+
+        try {
+            $result = $this->runBackupCommand($fixture, $backupDir, null, false);
+
+            $this->assertSame(1, $result['exit']);
+            $this->assertTrue(
+                str_contains($result['stderr'] . $result['stdout'], '--config is required'),
+                'Backup should fail closed when the deployment config is omitted.'
+            );
+        } finally {
+            $this->deleteTree($fixture['root']);
+            $this->deleteTree($backupDir);
+        }
+    }
+
+    public function test_backup_script_rejects_config_that_does_not_match_runtime_paths(): void
+    {
+        $fixture = $this->createRecoveryFixture();
+        $backupDir = $this->tempDir('cloaking-backup-wrong-config-');
+        $wrongConfigPath = $fixture['root'] . DIRECTORY_SEPARATOR . 'wrong-config.local.php';
+
+        try {
+            file_put_contents($wrongConfigPath, sprintf(
+                <<<'PHP'
+<?php
+define('APP_RUNTIME_DIR', %s);
+define('DB_PATH', %s);
+define('LOG_PATH', %s);
+define('APP_BASE_URL', 'https://wrong.example.test');
+define('SYSTEM_HOSTS', ['wrong.example.test']);
+define('TRUSTED_PROXIES', ['172.23.0.2/32']);
+PHP,
+                var_export($fixture['root'] . DIRECTORY_SEPARATOR . 'other-runtime', true),
+                var_export($fixture['root'] . DIRECTORY_SEPARATOR . 'other-runtime' . DIRECTORY_SEPARATOR . 'cloaking.sqlite', true),
+                var_export($fixture['root'] . DIRECTORY_SEPARATOR . 'other-runtime' . DIRECTORY_SEPARATOR . 'logs' . DIRECTORY_SEPARATOR, true)
+            ));
+
+            $result = $this->runBackupCommand($fixture, $backupDir, $wrongConfigPath);
+
+            $this->assertSame(1, $result['exit']);
+            $this->assertTrue(
+                str_contains($result['stderr'] . $result['stdout'], 'does not match --db'),
+                'Backup should reject a deployment config that points at different runtime paths.'
             );
         } finally {
             $this->deleteTree($fixture['root']);
@@ -166,7 +221,7 @@ define('DB_PATH', %s);
 define('LOG_PATH', %s);
 define('APP_BASE_URL', 'https://app.example.test');
 define('SYSTEM_HOSTS', ['127.0.0.1', 'app.example.test']);
-define('TRUSTED_PROXIES', []);
+define('TRUSTED_PROXIES', ['172.23.0.2/32']);
 PHP;
         file_put_contents($configPath, sprintf(
             $config,
@@ -214,17 +269,22 @@ PHP;
      * @param array{root:string,runtimeDir:string,logsDir:string,dbPath:string,appKeyPath:string,configPath:string} $fixture
      * @return array{exit:int,stdout:string,stderr:string}
      */
-    private function runBackupCommand(array $fixture, string $backupDir): array
+    private function runBackupCommand(array $fixture, string $backupDir, ?string $configPath = null, bool $includeConfig = true): array
     {
-        return $this->runProcess([
+        $command = [
             'bash',
             APP_ROOT . '/ops/backup_sqlite.sh',
             '--app-root=' . APP_ROOT,
             '--db=' . $fixture['dbPath'],
             '--app-key=' . $fixture['appKeyPath'],
-            '--config=' . $fixture['configPath'],
             '--output=' . $backupDir,
-        ], APP_ROOT);
+        ];
+
+        if ($includeConfig) {
+            $command[] = '--config=' . ($configPath ?? $fixture['configPath']);
+        }
+
+        return $this->runProcess($command, APP_ROOT);
     }
 
     /**

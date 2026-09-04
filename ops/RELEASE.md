@@ -11,7 +11,8 @@ This release workflow assumes the app runs behind a TLS terminator such as Caddy
 
 ## Pre-Deploy Backup
 
-Run the backup from the host before every migration or image change:
+Run the backup before every migration or image change using the exact deployment
+config that the app is running with:
 
 ```bash
 mkdir -p /srv/cloaking/backups/$(date -u +%Y%m%dT%H%M%SZ)
@@ -23,6 +24,8 @@ bash ops/backup_sqlite.sh \
 ```
 
 Treat a backup as valid only when the command exits `0` and writes `cloaking.sqlite`, `app.key`, `config.local.php`, `backup-metadata.json`, and `SHA256SUMS`.
+The backup command now fails closed if `--config` is missing, unreadable, or
+declares runtime paths that do not match `--db` and `--app-key`.
 
 ## Restore Rehearsal Gate
 
@@ -42,6 +45,9 @@ Review:
 - `migration.stdout.log` and `migration.stderr.log` for schema drift
 
 If any checksum, integrity, migration, or smoke step fails, stop the release and create a fresh backup after fixing the issue.
+Do not commit raw backup artifacts, SQLite files, app keys, or reusable runtime
+config into version control. Commit only redacted evidence such as summaries,
+safe smoke-status excerpts, and checksum manifests.
 
 ## Deployment Sequence
 
