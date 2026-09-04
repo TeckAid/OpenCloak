@@ -184,6 +184,8 @@ PHP,
             $versions = array_map('intval', $db->query('SELECT version FROM schema_migrations ORDER BY version')->fetchAll(PDO::FETCH_COLUMN));
             $link = $db->query('SELECT * FROM links WHERE id = 11')->fetch();
             $hit = $db->query('SELECT * FROM hit_log WHERE id = 12')->fetch();
+            $credential = $db->query('SELECT * FROM client_credentials WHERE id = 13')->fetch();
+            $campaignForeignKey = $this->findForeignKey($db, 'client_credentials', ['campaign_id', 'user_id']);
 
             $this->assertSame([1, 2, 3], $versions);
             $this->assertSame('promo', (string) $link['slug']);
@@ -192,6 +194,65 @@ PHP,
             $this->assertSame('', (string) $hit['source']);
             $this->assertSame('', (string) $hit['host']);
             $this->assertSame(1, (int) $db->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'client_credentials'")->fetchColumn());
+            $this->assertTrue(is_array($credential));
+            $this->assertSame(1, (int) $credential['user_id']);
+            $this->assertSame(7, (int) $credential['campaign_id']);
+            $this->assertSame('legacy-hash', (string) $credential['credential_hash']);
+            $this->assertSame('verify', (string) $credential['scope']);
+            $this->assertSame('revoked', (string) $credential['status']);
+            $this->assertSame('2026-08-01 00:00:00', (string) $credential['expires_at']);
+            $this->assertSame('2026-08-02 00:00:00', (string) $credential['revoked_at']);
+            $this->assertTrue(is_array($campaignForeignKey));
+            $this->assertSame(['id', 'user_id'], $campaignForeignKey['to']);
+        } finally {
+            $this->deleteTree($runtime);
+        }
+    }
+
+    public function test_verify_database_schema_rejects_legacy_client_credentials_constraint_shape_even_with_ledger(): void
+    {
+        $runtime = $this->createTempDir('cloaking-bad-constraint-');
+        $dbPath = $runtime . DIRECTORY_SEPARATOR . 'cloaking.sqlite';
+
+        try {
+            $this->assertSame(0, $this->runMigrationCommand($dbPath)['exit']);
+
+            $db = $this->openDatabase($dbPath);
+            $this->seedOwnershipFixture($db);
+            $db->prepare("
+                INSERT INTO client_credentials (id, user_id, campaign_id, credential_hash, scope, status, created_at, expires_at, revoked_at)
+                VALUES (41, 1, 7, 'good-hash', 'verify', 'active', '2026-08-01 00:00:00', '2026-08-03 00:00:00', NULL)
+            ")->execute();
+
+            $db->exec("
+                DROP TABLE IF EXISTS client_credentials_legacy;
+                CREATE TABLE client_credentials_legacy (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    campaign_id INTEGER NOT NULL,
+                    credential_hash TEXT UNIQUE NOT NULL,
+                    scope TEXT NOT NULL DEFAULT 'verify',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    expires_at DATETIME NOT NULL,
+                    revoked_at DATETIME,
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+                );
+                INSERT INTO client_credentials_legacy (id, user_id, campaign_id, credential_hash, scope, status, created_at, expires_at, revoked_at)
+                SELECT id, user_id, campaign_id, credential_hash, scope, status, created_at, expires_at, revoked_at
+                FROM client_credentials;
+                DROP TABLE client_credentials;
+                ALTER TABLE client_credentials_legacy RENAME TO client_credentials;
+                CREATE INDEX idx_client_credentials_campaign ON client_credentials(campaign_id, status, expires_at DESC);
+                CREATE INDEX idx_client_credentials_hash ON client_credentials(credential_hash);
+            ");
+
+            $this->assertThrows(
+                static fn () => verifyDatabaseSchema($db),
+                RuntimeException::class,
+                'client_credentials'
+            );
         } finally {
             $this->deleteTree($runtime);
         }
@@ -413,12 +474,57 @@ PHP,
             VALUES (12, 11, '198.51.100.7', 'Mozilla/5.0', '', 'en-US', 'US', 'mobile', 0, 0, 0, 'offer')
         ")->execute();
         $db->prepare("INSERT INTO delay_ips (campaign_id, ip_hash) VALUES (7, 'legacy-hash')")->execute();
+        $db->exec("
+            CREATE TABLE client_credentials (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                campaign_id INTEGER NOT NULL,
+                credential_hash TEXT UNIQUE NOT NULL,
+                scope TEXT NOT NULL DEFAULT 'verify',
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                expires_at DATETIME NOT NULL,
+                revoked_at DATETIME,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+            );
+        ");
+        $db->prepare("
+            INSERT INTO client_credentials (id, user_id, campaign_id, credential_hash, scope, status, created_at, expires_at, revoked_at)
+            VALUES (13, 1, 7, 'legacy-hash', 'verify', 'revoked', '2026-07-31 00:00:00', '2026-08-01 00:00:00', '2026-08-02 00:00:00')
+        ")->execute();
 
         $db->exec("
             ALTER TABLE links ADD COLUMN campaign_id INTEGER;
             ALTER TABLE links ADD COLUMN domain_id INTEGER;
             UPDATE links SET campaign_id = 7, domain_id = 8 WHERE id = 11;
         ");
+    }
+
+    /**
+     * @return array{from:list<string>,to:list<string>,table:string}|null
+     */
+    private function findForeignKey(PDO $db, string $table, array $fromColumns): ?array
+    {
+        $rows = $db->query("PRAGMA foreign_key_list({$table})")->fetchAll();
+        $grouped = [];
+        foreach ($rows as $row) {
+            $grouped[(int) $row['id']]['from'][] = (string) $row['from'];
+            $grouped[(int) $row['id']]['to'][] = (string) $row['to'];
+            $grouped[(int) $row['id']]['table'] = (string) $row['table'];
+        }
+
+        foreach ($grouped as $fk) {
+            if (($fk['from'] ?? []) === $fromColumns) {
+                return [
+                    'from' => $fk['from'],
+                    'to' => $fk['to'],
+                    'table' => $fk['table'],
+                ];
+            }
+        }
+
+        return null;
     }
 
     private function seedOwnershipFixture(PDO $db): void

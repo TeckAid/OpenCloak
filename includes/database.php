@@ -107,6 +107,8 @@ function verifyDatabaseSchema(PDO $db): void
             ));
         }
     }
+
+    database_verify_client_credentials_schema($db);
 }
 
 /**
@@ -230,6 +232,10 @@ function database_apply_migration(PDO $db, int $version, string $file): void
     if ($version === 2) {
         database_prepare_current_columns_migration($db);
         database_validate_current_columns_preconditions($db);
+    }
+
+    if ($version === 3 && database_prepare_client_credentials_migration($db)) {
+        return;
     }
 
     database_exec_sql_file($db, $file);
@@ -496,6 +502,133 @@ function database_validate_current_columns_preconditions(PDO $db): void
     if (is_array($duplicateLinkScope)) {
         throw new RuntimeException('Migration 002 cannot enforce link delay-start uniqueness until duplicate link/ip_hash rows are repaired.');
     }
+}
+
+function database_prepare_client_credentials_migration(PDO $db): bool
+{
+    if (!database_table_exists($db, 'client_credentials')) {
+        return false;
+    }
+
+    if (database_client_credentials_schema_is_valid($db)) {
+        database_create_client_credentials_indexes($db);
+        return true;
+    }
+
+    $mismatch = (int) $db->query("
+        SELECT COUNT(*)
+        FROM client_credentials cc
+        LEFT JOIN campaigns c
+          ON c.id = cc.campaign_id
+         AND c.user_id = cc.user_id
+        WHERE c.id IS NULL
+    ")->fetchColumn();
+    if ($mismatch > 0) {
+        throw new RuntimeException('Migration 003 cannot enforce client credential campaign ownership until orphaned or cross-tenant credentials are repaired.');
+    }
+
+    $db->exec('DROP TABLE IF EXISTS client_credentials_new');
+    $db->exec("
+        CREATE TABLE client_credentials_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            campaign_id INTEGER NOT NULL,
+            credential_hash TEXT UNIQUE NOT NULL,
+            scope TEXT NOT NULL DEFAULT 'verify',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            expires_at DATETIME NOT NULL,
+            revoked_at DATETIME,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (campaign_id, user_id) REFERENCES campaigns(id, user_id) ON DELETE CASCADE
+        )
+    ");
+    $db->exec("
+        INSERT INTO client_credentials_new (
+            id, user_id, campaign_id, credential_hash, scope, status, created_at, expires_at, revoked_at
+        )
+        SELECT
+            id, user_id, campaign_id, credential_hash, scope, status, created_at, expires_at, revoked_at
+        FROM client_credentials
+    ");
+    $db->exec('DROP TABLE client_credentials');
+    $db->exec('ALTER TABLE client_credentials_new RENAME TO client_credentials');
+    database_create_client_credentials_indexes($db);
+
+    return true;
+}
+
+function database_verify_client_credentials_schema(PDO $db): void
+{
+    if (!database_client_credentials_schema_is_valid($db)) {
+        throw new RuntimeException('Database schema version 3 has an invalid client_credentials constraint shape. Run bin/migrate.php after repairing the legacy table.');
+    }
+}
+
+function database_client_credentials_schema_is_valid(PDO $db): bool
+{
+    $columns = database_columns($db, 'client_credentials');
+    foreach (['id', 'user_id', 'campaign_id', 'credential_hash', 'scope', 'status', 'created_at', 'expires_at', 'revoked_at'] as $column) {
+        if (!isset($columns[$column])) {
+            return false;
+        }
+    }
+
+    $foreignKeys = database_foreign_keys($db, 'client_credentials');
+    $campaignOwnershipFk = null;
+    $userFk = null;
+
+    foreach ($foreignKeys as $foreignKey) {
+        if (($foreignKey['table'] ?? '') === 'campaigns' && ($foreignKey['from'] ?? []) === ['campaign_id', 'user_id']) {
+            $campaignOwnershipFk = $foreignKey;
+        }
+        if (($foreignKey['table'] ?? '') === 'users' && ($foreignKey['from'] ?? []) === ['user_id']) {
+            $userFk = $foreignKey;
+        }
+    }
+
+    if (!is_array($campaignOwnershipFk) || ($campaignOwnershipFk['to'] ?? []) !== ['id', 'user_id'] || strtoupper((string) ($campaignOwnershipFk['on_delete'] ?? '')) !== 'CASCADE') {
+        return false;
+    }
+
+    if (!is_array($userFk) || ($userFk['to'] ?? []) !== ['id'] || strtoupper((string) ($userFk['on_delete'] ?? '')) !== 'CASCADE') {
+        return false;
+    }
+
+    return true;
+}
+
+function database_create_client_credentials_indexes(PDO $db): void
+{
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_client_credentials_campaign ON client_credentials(campaign_id, status, expires_at DESC)');
+    $db->exec('CREATE INDEX IF NOT EXISTS idx_client_credentials_hash ON client_credentials(credential_hash)');
+}
+
+/**
+ * @return list<array{table:string,from:list<string>,to:list<string>,on_delete:string,on_update:string}>
+ */
+function database_foreign_keys(PDO $db, string $table): array
+{
+    $rows = $db->query("PRAGMA foreign_key_list({$table})")->fetchAll();
+    $grouped = [];
+
+    foreach ($rows as $row) {
+        $id = (int) $row['id'];
+        if (!isset($grouped[$id])) {
+            $grouped[$id] = [
+                'table' => (string) $row['table'],
+                'from' => [],
+                'to' => [],
+                'on_delete' => (string) $row['on_delete'],
+                'on_update' => (string) $row['on_update'],
+            ];
+        }
+
+        $grouped[$id]['from'][] = (string) $row['from'];
+        $grouped[$id]['to'][] = (string) $row['to'];
+    }
+
+    return array_values($grouped);
 }
 
 /**
