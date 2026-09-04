@@ -88,6 +88,17 @@ bash ops/restore_rehearsal.sh \
   --evidence-dir=ops/rehearsals/20260904T000000Z
 ```
 
+Before cutting a release tag, validate the release inputs from a clean checkout:
+
+```bash
+php ops/validate_release_inputs.php
+```
+
+The validator fails closed until `release-artifacts/release-metadata.json`
+exists, the referenced SBOM artifact exists, and
+[LEGAL_PLATFORM_REVIEW.md](/Users/nasir/Documents/GitHub/Cloaking/LEGAL_PLATFORM_REVIEW.md)
+has been completed by an authorized reviewer.
+
 ### Nginx
 
 Use `nginx.conf` as a template for your server block.
@@ -222,6 +233,15 @@ Secrets (app key, debug token, admin secret) are generated automatically in `APP
 - Never put your API key in URLs — the API only accepts the Authorization header
 - Client-mode API keys live in server-side PHP files only
 - Rotate API keys from **Settings** when needed
+
+Vulnerability handling and release secret expectations live in
+[SECURITY.md](/Users/nasir/Documents/GitHub/Cloaking/SECURITY.md).
+
+## Release gates
+
+- CI runs from a clean checkout, lints PHP, runs the full PHP test suite, verifies pinned image references, validates Docker Compose, rebuilds the production image without cache, exercises Apache/Nginx/Caddy integration checks, generates an SBOM, and scans the image for high and critical vulnerabilities.
+- Protected release tags publish a GHCR image plus `release-artifacts/release-metadata.json`; non-tag branches do not publish release digests.
+- The release stays blocked until the digest metadata exists and `LEGAL_PLATFORM_REVIEW.md` contains an authorized approval decision with evidence.
 
 ## File structure
 

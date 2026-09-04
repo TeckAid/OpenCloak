@@ -4,24 +4,41 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          clean: true
+          fetch-depth: 0
+
+      - name: Verify clean checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+            echo "Checkout is not clean." >&2
+            git status --short >&2
+            exit 1
+          fi
 
       - name: Set up PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@44454db4f0199b8b9685a5d763dc37cbf79108e1 # 2.36.0
         with:
           php-version: '8.4'
           extensions: pdo_sqlite, sqlite3
           coverage: none
 
       - name: Lint PHP files
+        shell: bash
         run: |
-          set -e
+          set -euo pipefail
           while IFS= read -r -d '' file; do
             php -l "$file"
           done < <(git ls-files '*.php' | tr '\n' '\0')
@@ -30,21 +47,204 @@ jobs:
         run: php tests/run.php
 
       - name: Verify pinned production image references
-        run: |
-          chmod +x tests/Integration/check_pinned_images.sh
-          tests/Integration/check_pinned_images.sh
+        run: tests/Integration/check_pinned_images.sh
 
       - name: Validate Docker Compose
         run: docker compose config --quiet
 
+  build:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          clean: true
+
       - name: Build production image from clean context
-        run: docker build --pull --file Dockerfile --tag cloaking:${{ github.sha }} .
+        run: docker build --pull --no-cache --file Dockerfile --tag cloaking:${{ github.sha }} .
+
+  integration_apache:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          clean: true
 
       - name: Run Apache integration checks
         run: tests/Integration/web_server_test.sh apache
 
+  integration_nginx:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          clean: true
+
       - name: Run Nginx integration checks
         run: tests/Integration/web_server_test.sh nginx
 
+  integration_caddy:
+    needs: test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          clean: true
+
       - name: Run Caddy integration checks
         run: tests/Integration/web_server_test.sh caddy
+
+  scan:
+    needs:
+      - build
+      - integration_apache
+      - integration_nginx
+      - integration_caddy
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          clean: true
+
+      - name: Build local image for scanning
+        run: docker build --pull --no-cache --file Dockerfile --tag cloaking-scan:${{ github.sha }} .
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@f8bdd1d8ac5e901a77a92f111440fdb1b593736b # v0.20.6
+        with:
+          image: cloaking-scan:${{ github.sha }}
+          format: spdx-json
+          output-file: ci-sbom.spdx.json
+          artifact-name: ci-sbom
+
+      - name: Scan image
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: cloaking-scan:${{ github.sha }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: HIGH,CRITICAL
+          vuln-type: os,library
+
+  release_provenance:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && github.ref_protected == true
+    needs:
+      - scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          clean: true
+          fetch-depth: 0
+
+      - name: Verify clean checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
+            echo "Checkout is not clean." >&2
+            git status --short >&2
+            exit 1
+          fi
+
+      - name: Set up PHP
+        uses: shivammathur/setup-php@44454db4f0199b8b9685a5d763dc37cbf79108e1 # 2.36.0
+        with:
+          php-version: '8.4'
+          coverage: none
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Resolve image repository
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          image_repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "repository=${image_repo}" >> "${GITHUB_OUTPUT}"
+          echo "release_ref=${image_repo}:${GITHUB_REF_NAME}" >> "${GITHUB_OUTPUT}"
+
+      - name: Log in to GHCR
+        uses: docker/login-action@184bdaa0721073962dff0199f1fb9940f07167d1 # v3.5.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and publish release image
+        id: release_image
+        uses: docker/build-push-action@ee4ca427a2f43b6a16632044ca514c076267da23 # v6.19.0
+        with:
+          context: .
+          file: Dockerfile
+          pull: true
+          no-cache: true
+          push: true
+          tags: ${{ steps.image.outputs.release_ref }}
+
+      - name: Prepare release artifact directory
+        run: mkdir -p release-artifacts
+
+      - name: Generate release SBOM
+        uses: anchore/sbom-action@f8bdd1d8ac5e901a77a92f111440fdb1b593736b # v0.20.6
+        with:
+          image: ${{ steps.image.outputs.release_ref }}@${{ steps.release_image.outputs.digest }}
+          format: spdx-json
+          output-file: release-artifacts/sbom.spdx.json
+          artifact-name: release-sbom
+
+      - name: Write release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg tag "${GITHUB_REF_NAME}" \
+            --arg commit "${GITHUB_SHA}" \
+            --arg image_ref "${{ steps.image.outputs.release_ref }}@${{ steps.release_image.outputs.digest }}" \
+            --arg digest "${{ steps.release_image.outputs.digest }}" \
+            --arg sbom_path "release-artifacts/sbom.spdx.json" \
+            '{
+              git: {
+                tag: $tag,
+                commit: $commit,
+                protected: true
+              },
+              image: {
+                ref: $image_ref,
+                digest: $digest
+              },
+              sbom: {
+                path: $sbom_path
+              }
+            }' > release-artifacts/release-metadata.json
+
+      - name: Validate release gates
+        run: php ops/validate_release_inputs.php
+
+      - name: Upload release metadata
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-provenance
+          path: |
+            release-artifacts/release-metadata.json
+            release-artifacts/sbom.spdx.json
