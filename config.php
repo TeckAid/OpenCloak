@@ -2,8 +2,8 @@
 /**
  * Cloaking SaaS - Configuration
  *
- * Secrets are NOT hardcoded. On first run a random key is generated in
- * data/app.key and all secrets are derived from it. For advanced setups,
+ * Secrets are NOT hardcoded. On first run a random key is generated in the
+ * runtime directory and all secrets are derived from it. For advanced setups,
  * copy config.local.example.php to config.local.php and adjust values.
  */
 
@@ -12,14 +12,19 @@ if (file_exists(__DIR__ . '/config.local.php')) {
     require __DIR__ . '/config.local.php';
 }
 
+// ---- Runtime storage -------------------------------------------------------
+if (!defined('APP_RUNTIME_DIR')) {
+    define('APP_RUNTIME_DIR', dirname(__DIR__) . '/cloaking-runtime');
+}
+
 // ---- Database --------------------------------------------------------------
 if (!defined('DB_PATH')) {
-    define('DB_PATH', __DIR__ . '/data/cloaking.db');
+    define('DB_PATH', APP_RUNTIME_DIR . '/cloaking.sqlite');
 }
 
 // ---- Application key (random, generated on first run) ----------------------
 if (!defined('APP_KEY')) {
-    $appKeyFile = __DIR__ . '/data/app.key';
+    $appKeyFile = APP_RUNTIME_DIR . '/app.key';
     $appKey = null;
     if (is_readable($appKeyFile)) {
         $appKey = trim((string)file_get_contents($appKeyFile));
@@ -114,7 +119,7 @@ if (!defined('LOG_ENABLED')) {
     define('LOG_ENABLED', true);
 }
 if (!defined('LOG_PATH')) {
-    define('LOG_PATH', __DIR__ . '/logs/');
+    define('LOG_PATH', APP_RUNTIME_DIR . '/logs/');
 }
 if (!defined('LOG_RETENTION_DAYS')) {
     define('LOG_RETENTION_DAYS', 30);

@@ -12,7 +12,7 @@ final class DatabaseFixture
 <?php
 define('DB_PATH', %s);
 require %s;
-initDatabase();
+setupDatabase();
 PHP;
 
         file_put_contents($bootstrap, sprintf(

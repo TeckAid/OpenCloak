@@ -7,7 +7,8 @@ function getDB(): PDO
 {
     static $db = null;
     if ($db === null) {
-        $dbPath = defined('DB_PATH') ? DB_PATH : __DIR__ . '/../data/cloaking.db';
+        $defaultRuntimeDir = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'cloaking-runtime';
+        $dbPath = defined('DB_PATH') ? DB_PATH : $defaultRuntimeDir . DIRECTORY_SEPARATOR . 'cloaking.sqlite';
         $dir = dirname($dbPath);
         if (!is_dir($dir)) {
             mkdir($dir, 0755, true);
@@ -24,6 +25,14 @@ function getDB(): PDO
 }
 
 function initDatabase(): PDO
+{
+    $db = getDB();
+    verifyDatabaseSchema($db);
+
+    return $db;
+}
+
+function setupDatabase(): PDO
 {
     $db = getDB();
 
@@ -230,6 +239,19 @@ function initDatabase(): PDO
     $db->exec("CREATE INDEX IF NOT EXISTS idx_delay_ips ON delay_ips(campaign_id, link_id, ip_hash)");
 
     return $db;
+}
+
+function verifyDatabaseSchema(PDO $db): void
+{
+    $requiredTables = ['users', 'campaigns', 'domains', 'links', 'settings', 'rate_limits', 'delay_ips', 'hit_log'];
+
+    foreach ($requiredTables as $table) {
+        $stmt = $db->prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?");
+        $stmt->execute([$table]);
+        if ($stmt->fetchColumn() === false) {
+            throw new RuntimeException('Database schema is not initialized.');
+        }
+    }
 }
 
 /**

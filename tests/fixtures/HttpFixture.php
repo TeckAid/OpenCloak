@@ -26,7 +26,6 @@ final class HttpFixture
         self::copyFile(APP_ROOT . '/dev-router.php', $docroot . '/dev-router.php');
 
         self::writeConfigOverride($docroot . '/config.local.php', $dbPath, $logs . DIRECTORY_SEPARATOR);
-        self::writeDatabaseShim($docroot . '/includes/database.php');
         self::initializeDatabaseFile($dbPath);
         self::copyFile($dbPath, $docrootData . '/cloaking.db');
         self::writeRouterShim($docroot . '/router.php');
@@ -61,59 +60,6 @@ PHP;
         ));
     }
 
-    private static function writeDatabaseShim(string $path): void
-    {
-        $contents = <<<'PHP'
-<?php
-
-function getDB(): PDO
-{
-    static $db = null;
-    if ($db === null) {
-        $dbPath = defined('DB_PATH') ? DB_PATH : __DIR__ . '/../data/cloaking.db';
-        $dir = dirname($dbPath);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0755, true);
-        }
-        $db = new PDO('sqlite:' . $dbPath);
-        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-        $db->exec('PRAGMA journal_mode=WAL');
-        $db->exec('PRAGMA synchronous=NORMAL');
-        $db->exec('PRAGMA busy_timeout=5000');
-        $db->exec('PRAGMA foreign_keys=ON');
-    }
-    return $db;
-}
-
-function initDatabase(): PDO
-{
-    $db = getDB();
-    $tables = ['users', 'campaigns', 'domains', 'links', 'settings', 'rate_limits', 'delay_ips', 'hit_log'];
-    foreach ($tables as $table) {
-        $stmt = $db->prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?");
-        $stmt->execute([$table]);
-        if (!$stmt->fetchColumn()) {
-            throw new RuntimeException("Missing required table: {$table}");
-        }
-    }
-    return $db;
-}
-
-function migrate(PDO $db): void
-{
-    // Test fixture shim: schema is pre-initialized before the request runs.
-}
-
-function maintenance_tick(PDO $db): void
-{
-    // Test fixture shim: no-op.
-}
-PHP;
-
-        file_put_contents($path, $contents);
-    }
-
     private static function initializeDatabaseFile(string $dbPath): void
     {
         $setup = tempnam(sys_get_temp_dir(), 'cloaking-db-setup-');
@@ -125,7 +71,7 @@ PHP;
 <?php
 define('DB_PATH', %s);
 require %s;
-initDatabase();
+setupDatabase();
 PHP;
         file_put_contents($setup, sprintf(
             $script,

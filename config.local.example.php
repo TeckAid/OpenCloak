@@ -10,11 +10,15 @@
  */
 
 /*
-// Use a different database location
-define('DB_PATH', __DIR__ . '/data/cloaking.db');
+// Mutable runtime state should live outside the deployed app tree and be
+// writable by the PHP user. By default the app uses ../cloaking-runtime/.
+define('APP_RUNTIME_DIR', dirname(__DIR__) . '/cloaking-runtime');
+
+// Override the SQLite file directly when you need a different path.
+define('DB_PATH', APP_RUNTIME_DIR . '/cloaking.sqlite');
 
 // Provide your own application key (64 hex chars). Otherwise one is
-// generated automatically in data/app.key on first run.
+// generated automatically in APP_RUNTIME_DIR/app.key on first run.
 define('APP_KEY', str_repeat('0', 64));
 
 // Canonical application URL used for generated links and callbacks.

@@ -6,7 +6,7 @@ final class HttpTest extends TestCase
 {
     public function test_fresh_admin_request_does_not_create_any_users(): void
     {
-        $runtime = $this->createRuntimeApp();
+        $runtime = $this->createRuntimeApp(null, [], true);
 
         try {
             $server = $this->startRuntimeServer($runtime['docroot']);
@@ -24,9 +24,51 @@ final class HttpTest extends TestCase
         }
     }
 
+    public function test_uninitialized_admin_request_does_not_create_schema(): void
+    {
+        $runtime = $this->createRuntimeApp(null, [], false);
+
+        try {
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $response = $this->httpRequest($server['port'], 'GET', '/admin/login.php');
+            $this->stopServer($server['process']);
+
+            $db = new PDO('sqlite:' . $runtime['dbPath']);
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $usersTable = $db->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'users'")->fetchColumn();
+
+            $this->assertSame(500, $response['status']);
+            $this->assertSame(false, $usersTable);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_initialized_admin_request_does_not_mutate_schema(): void
+    {
+        $runtime = $this->createRuntimeApp(null, [], true);
+
+        try {
+            $db = new PDO('sqlite:' . $runtime['dbPath']);
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $before = (int) $db->query('PRAGMA schema_version')->fetchColumn();
+
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $response = $this->httpRequest($server['port'], 'GET', '/admin/login.php');
+            $this->stopServer($server['process']);
+
+            $after = (int) $db->query('PRAGMA schema_version')->fetchColumn();
+
+            $this->assertSame(200, $response['status']);
+            $this->assertSame($before, $after);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
     public function test_install_creates_first_administrator_once_without_hidden_default_account(): void
     {
-        $runtime = $this->createRuntimeApp();
+        $runtime = $this->createRuntimeApp(null, [], false);
 
         try {
             $firstRun = $this->runInstallCommand($runtime, ['--username=owner', '--generate-password']);
@@ -60,7 +102,7 @@ final class HttpTest extends TestCase
 
     public function test_default_admin_credentials_cannot_authenticate_after_custom_install(): void
     {
-        $runtime = $this->createRuntimeApp();
+        $runtime = $this->createRuntimeApp(null, [], false);
 
         try {
             $install = $this->runInstallCommand($runtime, ['--username=owner', '--password=StrongPass123!']);
@@ -97,7 +139,7 @@ final class HttpTest extends TestCase
 
     public function test_admin_login_rejects_post_without_csrf_token(): void
     {
-        $runtime = $this->createRuntimeApp();
+        $runtime = $this->createRuntimeApp(null, [], true);
 
         try {
             $server = $this->startRuntimeServer($runtime['docroot']);
@@ -199,7 +241,7 @@ final class HttpTest extends TestCase
 
     public function test_admin_login_page_is_not_cacheable_and_sets_session_cookie_attributes(): void
     {
-        $runtime = $this->createRuntimeApp();
+        $runtime = $this->createRuntimeApp(null, [], true);
 
         try {
             $server = $this->startRuntimeServer($runtime['docroot']);
@@ -223,7 +265,8 @@ final class HttpTest extends TestCase
             null,
             [
                 'TRUSTED_PROXIES' => ['127.0.0.1/32'],
-            ]
+            ],
+            true
         );
 
         try {
@@ -311,6 +354,22 @@ final class HttpTest extends TestCase
                 str_contains($expiredCookie, 'Max-Age=0') || str_contains($expiredCookie, 'Expires=Thu, 01 Jan 1970'),
                 'Logout should expire the session cookie.'
             );
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_install_endpoint_refuses_http_execution(): void
+    {
+        $runtime = $this->createRuntimeApp(null, [], false);
+
+        try {
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $response = $this->httpRequest($server['port'], 'GET', '/install.php');
+            $this->stopServer($server['process']);
+
+            $this->assertSame(404, $response['status']);
+            $this->assertSame('', $response['body']);
         } finally {
             $this->deleteTree($runtime['root']);
         }
@@ -495,9 +554,10 @@ final class HttpTest extends TestCase
     /**
      * @param callable(PDO):void|null $seed
      * @param array<string, mixed> $configOverrides
+     * @param bool $initializeSchema
      * @return array{root:string,docroot:string,runtimeState:string,dbPath:string}
      */
-    private function createRuntimeApp(?callable $seed = null, array $configOverrides = []): array
+    private function createRuntimeApp(?callable $seed = null, array $configOverrides = [], bool $initializeSchema = true): array
     {
         $runtime = $this->tempDir('cloaking-http-');
         $docroot = $runtime . DIRECTORY_SEPARATOR . 'docroot';
@@ -527,10 +587,11 @@ final class HttpTest extends TestCase
         );
         $this->writeRouterShim($docroot . '/router.php');
 
-        if ($seed !== null) {
+        if ($initializeSchema) {
             $this->initializeDatabaseFile($dbPath);
-            $this->writeDatabaseShim($docroot . '/includes/database.php');
+        }
 
+        if ($seed !== null) {
             $db = new PDO('sqlite:' . $dbPath);
             $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
             $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
@@ -571,57 +632,6 @@ final class HttpTest extends TestCase
         file_put_contents($path, implode(PHP_EOL, $lines) . PHP_EOL);
     }
 
-    private function writeDatabaseShim(string $path): void
-    {
-        $contents = <<<'PHP'
-<?php
-
-function getDB(): PDO
-{
-    static $db = null;
-    if ($db === null) {
-        $dbPath = defined('DB_PATH') ? DB_PATH : __DIR__ . '/../data/cloaking.db';
-        $dir = dirname($dbPath);
-        if (!is_dir($dir)) {
-            mkdir($dir, 0755, true);
-        }
-        $db = new PDO('sqlite:' . $dbPath);
-        $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
-        $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-        $db->exec('PRAGMA journal_mode=WAL');
-        $db->exec('PRAGMA synchronous=NORMAL');
-        $db->exec('PRAGMA busy_timeout=5000');
-        $db->exec('PRAGMA foreign_keys=ON');
-    }
-    return $db;
-}
-
-function initDatabase(): PDO
-{
-    $db = getDB();
-    $tables = ['users', 'campaigns', 'domains', 'links', 'settings', 'rate_limits', 'delay_ips', 'hit_log'];
-    foreach ($tables as $table) {
-        $stmt = $db->prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?");
-        $stmt->execute([$table]);
-        if (!$stmt->fetchColumn()) {
-            throw new RuntimeException("Missing required table: {$table}");
-        }
-    }
-    return $db;
-}
-
-function migrate(PDO $db): void
-{
-}
-
-function maintenance_tick(PDO $db): void
-{
-}
-PHP;
-
-        file_put_contents($path, $contents);
-    }
-
     private function initializeDatabaseFile(string $dbPath): void
     {
         $setup = tempnam(sys_get_temp_dir(), 'cloaking-db-setup-');
@@ -633,7 +643,7 @@ PHP;
 <?php
 define('DB_PATH', %s);
 require %s;
-initDatabase();
+setupDatabase();
 PHP;
 
         file_put_contents($setup, sprintf(

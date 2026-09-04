@@ -5,8 +5,7 @@
  * Usage:
  *   php install.php --username=admin --password='StrongPass123!'
  *
- * Run this before exposing the app to the internet. The first user created
- * this way has must_change_password=0 (unlike the auto-created default).
+ * Run this before exposing the app to the internet.
  */
 
 if (PHP_SAPI !== 'cli') {
@@ -14,8 +13,10 @@ if (PHP_SAPI !== 'cli') {
     exit;
 }
 
-require __DIR__ . '/includes/bootstrap.php';
-boot_app(false);
+require __DIR__ . '/config.php';
+require __DIR__ . '/includes/database.php';
+
+$db = setupDatabase();
 
 $options = getopt('', ['username::', 'password::', 'generate-password']);
 $username = trim((string)($options['username'] ?? 'admin'));
@@ -24,7 +25,6 @@ if (!preg_match('/^[a-zA-Z0-9_.-]{1,64}$/', $username)) {
     exit(1);
 }
 
-$db = getDB();
 $db->exec('BEGIN IMMEDIATE');
 
 try {

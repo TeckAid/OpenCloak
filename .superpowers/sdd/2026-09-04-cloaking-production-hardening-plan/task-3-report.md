@@ -83,3 +83,69 @@ Result:
 ## Concerns
 
 - The account-based limiter intentionally counts attempts by lowercased username string before credential verification. That closes the cross-IP brute-force hole, but it also means repeated guesses against a mistyped username can temporarily lock that username string for the configured window.
+
+## Fix round 1
+
+Addressed the review findings against the first Task 3 commit.
+
+### What changed
+
+- `initDatabase()` is now verify-only and throws when the schema has not been set up; the new `setupDatabase()` path owns schema creation and legacy migration work for the installer and test fixtures.
+- `install.php` now loads config/database directly and uses `setupDatabase()` instead of request bootstrap, so schema setup stays off the normal HTTP/API path.
+- The default mutable runtime state now lives under `APP_RUNTIME_DIR` with `DB_PATH`, `APP_KEY`, and `LOG_PATH` defaulting to `../cloaking-runtime/...`, outside the deployed app tree.
+- `config.local.example.php` now documents the default runtime directory and the expectation that the PHP user can write to it.
+- HTTP fixtures and isolated database fixtures now pre-initialize schema explicitly through `setupDatabase()` and run requests against the real runtime database code with no request-time shim.
+- Added regressions proving an uninitialized admin request returns `500` without creating schema, initialized requests keep the schema stable, the default DB path sits outside the app tree, and `/install.php` refuses direct HTTP execution.
+
+### Focused red run
+
+Command:
+
+```bash
+php -r 'require "tests/bootstrap.php"; require "tests/Unit/SecurityTest.php"; require "tests/Integration/HttpTest.php"; foreach ([new SecurityTest(), new HttpTest()] as $case) { foreach ($case->run() as $result) { $line = get_class($case) . "::" . $result["name"] . " " . ($result["passed"] ? "PASS" : "FAIL"); if (!$result["passed"]) { $line .= " - " . $result["message"]; } echo $line, PHP_EOL; } }'
+```
+
+Observed failures before the fix:
+
+- `SecurityTest::test_default_db_path_is_outside_application_tree` failed with `Expected false`.
+- `HttpTest::test_uninitialized_admin_request_does_not_create_schema` failed with `Expected 500, got 200`.
+
+Notes from the same red pass:
+
+- `HttpTest::test_install_endpoint_refuses_http_execution` already passed, which confirmed the HTTP refusal behavior and locked it in with a direct regression.
+- `HttpTest::test_initialized_admin_request_does_not_mutate_schema` already passed; it remains as a guard that initialized requests stay read-only with respect to schema.
+
+### Focused green run
+
+Same command as above.
+
+Result: all focused `SecurityTest` and `HttpTest` cases passed, including the new request-bootstrap, default-path, and HTTP-installer regressions.
+
+### Full lint
+
+Command:
+
+```bash
+rg --files -g '*.php' | xargs -n1 php -l
+```
+
+Result: every tracked PHP file reported `No syntax errors detected`.
+
+### Full test suite
+
+Command:
+
+```bash
+php tests/run.php
+```
+
+Result:
+
+- `CredentialsTest` 1/1 PASS
+- `HttpTest` 22/22 PASS
+- `RulesTest` 2/2 PASS
+- `SecurityTest` 9/9 PASS
+
+### Concerns
+
+- `setupDatabase()` is intentionally a transitional setup entrypoint for the installer and fixtures until Task 6 introduces the explicit migration runner. The runtime path is now fail-closed on uninitialized databases.

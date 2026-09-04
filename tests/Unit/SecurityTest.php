@@ -97,6 +97,18 @@ PHP);
         $this->assertSame([false, false, true], $value);
     }
 
+    public function test_default_db_path_is_outside_application_tree(): void
+    {
+        $value = $this->runConfigProbe(<<<'PHP'
+return [
+    'db_path' => DB_PATH,
+    'app_root' => $appDir,
+];
+PHP);
+
+        $this->assertFalse(str_starts_with($value['db_path'], $value['app_root'] . DIRECTORY_SEPARATOR));
+    }
+
     /**
      * @return mixed
      */
@@ -152,6 +164,53 @@ PHP;
     }
 
     /**
+     * @return mixed
+     */
+    private function runConfigProbe(string $body)
+    {
+        $runtimeDir = $this->tempDir('cloaking-config-');
+        $appDir = $runtimeDir . DIRECTORY_SEPARATOR . 'app';
+        mkdir($appDir, 0700, true);
+
+        $configPath = $appDir . DIRECTORY_SEPARATOR . 'config.php';
+        copy(APP_ROOT . '/config.php', $configPath);
+
+        $scriptPath = $runtimeDir . DIRECTORY_SEPARATOR . 'probe.php';
+        $script = <<<PHP
+<?php
+\$appDir = dirname(%s);
+require_once %s;
+\$result = ((function () use (\$appDir) {
+%s
+})());
+echo json_encode(\$result, JSON_UNESCAPED_SLASHES);
+PHP;
+
+        file_put_contents($scriptPath, sprintf(
+            $script,
+            var_export($configPath, true),
+            var_export($configPath, true),
+            $body
+        ));
+
+        $command = escapeshellarg(PHP_BINARY) . ' ' . escapeshellarg($scriptPath);
+        $output = [];
+        $exitCode = 0;
+        exec($command . ' 2>&1', $output, $exitCode);
+
+        if ($exitCode !== 0) {
+            throw new RuntimeException('Config probe failed: ' . implode("\n", $output));
+        }
+
+        $decoded = json_decode(implode("\n", $output), true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            throw new RuntimeException('Config probe returned invalid JSON: ' . implode("\n", $output));
+        }
+
+        return $decoded;
+    }
+
+    /**
      * @return list<int>
      */
     private function runParallelRateLimitProbe(int $rounds, int $workers, int $max): array
@@ -165,7 +224,7 @@ PHP;
 <?php
 define('DB_PATH', $argv[1]);
 require_once %s;
-initDatabase();
+setupDatabase();
 PHP,
             var_export(APP_ROOT . '/includes/database.php', true)
         ));
