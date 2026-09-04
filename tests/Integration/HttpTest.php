@@ -395,7 +395,7 @@ final class HttpTest extends TestCase
         );
 
         $this->assertSame(400, $response['status']);
-        $this->assertTrue(str_contains($response['body'], 'offer_url must be a valid http(s) URL'));
+        $this->assertTrue(str_contains($response['body'], 'Invalid offer_url'));
     }
 
     public function test_api_rejects_array_clone_name(): void
@@ -529,6 +529,689 @@ final class HttpTest extends TestCase
         $response = HttpFixture::request('GET', '/definitely-missing');
 
         $this->assertSame(404, $response['status']);
+    }
+
+    public function test_admin_campaign_form_create_and_update_persist_all_fields(): void
+    {
+        $runtime = $this->createRuntimeApp(
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'owner', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'owner-api-key']);
+            }
+        );
+
+        try {
+            $db = new PDO('sqlite:' . $runtime['dbPath']);
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $cookie = $this->loginToAdmin($server['port']);
+
+            $campaignPage = $this->httpRequest($server['port'], 'GET', '/admin/campaigns.php', ['Cookie' => $cookie]);
+            $csrf = $this->extractCsrfToken($campaignPage['body']);
+
+            $createResponse = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/admin/campaigns.php',
+                [
+                    'Content-Type' => 'application/x-www-form-urlencoded',
+                    'Cookie' => $cookie,
+                ],
+                http_build_query([
+                    '_csrf' => $csrf,
+                    'action' => 'create',
+                    'name' => 'Campaign One',
+                    'offer_url' => 'https://offers.example/base',
+                    'white_page' => '<p>white</p>',
+                    'reject_mode' => 'error',
+                    'reject_code' => '451',
+                    'redirect_type' => '303',
+                    'redirect_delay' => '7',
+                    'block_bots' => '1',
+                    'block_vpn' => '1',
+                    'block_headless' => '1',
+                    'allowed_countries' => 'US,CA',
+                    'blocked_countries' => 'CN',
+                    'allowed_clients' => 'facebook,instagram',
+                    'blocked_clients' => 'tiktok',
+                    'allowed_devices' => 'mobile',
+                    'blocked_devices' => 'desktop',
+                    'allowed_os' => 'iOS,Android',
+                    'blocked_os' => 'Windows',
+                    'os_min_versions' => 'iOS>=14.9,Android>=10',
+                    'allowed_languages' => 'en',
+                    'blocked_languages' => 'ru',
+                    'allowed_referrers' => 'https://facebook.com/*',
+                    'blocked_referrers' => 'https://evil.example/*',
+                    'required_url_params' => 'utm_source=*',
+                    'blocked_url_params' => 'utm_bad=*',
+                    'required_url_keywords' => 'cid,fbclid',
+                    'allowed_resolutions' => 'iphone',
+                    'blocked_resolutions' => 'tablet',
+                    'require_screen_info' => '1',
+                    'offer_urls' => "https://offers.example/a\nhttps://offers.example/b",
+                    'rotation_mode' => 'sequential',
+                    'offer_routes' => "US=https://offers.example/us\n*=https://offers.example/world",
+                    'offer_method' => 'iframe',
+                    'forward_utms' => '1',
+                    'fast_mode' => '1',
+                    'delay_start' => '33',
+                    'allow_geo_override' => '1',
+                ])
+            );
+
+            $this->assertSame(200, $createResponse['status']);
+            $this->assertRowMatches(
+                $db->query('SELECT * FROM campaigns WHERE id = 1')->fetch(),
+                [
+                    'name' => 'Campaign One',
+                    'is_active' => 0,
+                    'offer_url' => 'https://offers.example/base',
+                    'white_page' => '<p>white</p>',
+                    'reject_mode' => 'error',
+                    'reject_code' => 451,
+                    'redirect_type' => '303',
+                    'redirect_delay' => 7,
+                    'block_bots' => 1,
+                    'block_datacenters' => 0,
+                    'block_review_infra' => 0,
+                    'block_vpn' => 1,
+                    'block_tor' => 0,
+                    'block_headless' => 1,
+                    'block_curl' => 0,
+                    'allowed_countries' => 'US,CA',
+                    'blocked_countries' => 'CN',
+                    'allowed_clients' => 'facebook,instagram',
+                    'blocked_clients' => 'tiktok',
+                    'allowed_devices' => 'mobile',
+                    'blocked_devices' => 'desktop',
+                    'allowed_os' => 'iOS,Android',
+                    'blocked_os' => 'Windows',
+                    'os_min_versions' => 'iOS>=14.9,Android>=10',
+                    'allowed_languages' => 'en',
+                    'blocked_languages' => 'ru',
+                    'allowed_referrers' => 'https://facebook.com/*',
+                    'blocked_referrers' => 'https://evil.example/*',
+                    'allow_empty_referer' => 0,
+                    'required_url_params' => 'utm_source=*',
+                    'blocked_url_params' => 'utm_bad=*',
+                    'required_url_keywords' => 'cid,fbclid',
+                    'allowed_resolutions' => 'iphone',
+                    'blocked_resolutions' => 'tablet',
+                    'require_screen_info' => 1,
+                    'single_visit_only' => 0,
+                    'offer_urls' => "https://offers.example/a\nhttps://offers.example/b",
+                    'rotation_mode' => 'sequential',
+                    'offer_routes' => "US=https://offers.example/us\n*=https://offers.example/world",
+                    'offer_method' => 'iframe',
+                    'forward_utms' => 1,
+                    'no_cache' => 0,
+                    'fast_mode' => 1,
+                    'delay_start' => 33,
+                    'delay_permanent' => 0,
+                    'allow_geo_override' => 1,
+                ]
+            );
+
+            $campaignEditPage = $this->httpRequest($server['port'], 'GET', '/admin/campaigns.php?edit=1', ['Cookie' => $cookie]);
+            $updateResponse = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/admin/campaigns.php',
+                [
+                    'Content-Type' => 'application/x-www-form-urlencoded',
+                    'Cookie' => $cookie,
+                ],
+                http_build_query([
+                    '_csrf' => $this->extractCsrfToken($campaignEditPage['body']),
+                    'action' => 'update',
+                    'id' => '1',
+                    'name' => 'Campaign Updated',
+                    'is_active' => '1',
+                    'offer_url' => 'https://offers.example/updated',
+                    'white_page' => '<div>updated</div>',
+                    'reject_mode' => 'white',
+                    'reject_code' => '404',
+                    'redirect_type' => 'meta',
+                    'redirect_delay' => '3',
+                    'block_datacenters' => '1',
+                    'block_review_infra' => '1',
+                    'block_tor' => '1',
+                    'block_curl' => '1',
+                    'allowed_countries' => 'GB',
+                    'blocked_countries' => 'RU,UA',
+                    'allowed_clients' => 'threads',
+                    'blocked_clients' => 'facebook',
+                    'allowed_devices' => 'tablet',
+                    'blocked_devices' => 'mobile',
+                    'allowed_os' => 'Android',
+                    'blocked_os' => 'iOS',
+                    'os_min_versions' => 'Android>=14.10',
+                    'allowed_languages' => 'fr',
+                    'blocked_languages' => 'de',
+                    'allowed_referrers' => 'https://threads.net/*',
+                    'blocked_referrers' => 'https://blocked.example/*',
+                    'allow_empty_referer' => '1',
+                    'required_url_params' => 'campaign=*',
+                    'blocked_url_params' => 'debug=*',
+                    'required_url_keywords' => 'gclid',
+                    'allowed_resolutions' => 'tablet',
+                    'blocked_resolutions' => 'iphone',
+                    'single_visit_only' => '1',
+                    'offer_urls' => "https://offers.example/c\nhttps://offers.example/d",
+                    'rotation_mode' => 'random',
+                    'offer_routes' => "CA=https://offers.example/ca\n*=https://offers.example/fallback",
+                    'offer_method' => 'redirect',
+                    'no_cache' => '1',
+                    'delay_start' => '2',
+                    'delay_permanent' => '1',
+                ])
+            );
+
+            $this->assertSame(200, $updateResponse['status']);
+            $this->assertRowMatches(
+                $db->query('SELECT * FROM campaigns WHERE id = 1')->fetch(),
+                [
+                    'name' => 'Campaign Updated',
+                    'is_active' => 1,
+                    'offer_url' => 'https://offers.example/updated',
+                    'white_page' => '<div>updated</div>',
+                    'reject_mode' => 'white',
+                    'reject_code' => 404,
+                    'redirect_type' => 'meta',
+                    'redirect_delay' => 3,
+                    'block_bots' => 0,
+                    'block_datacenters' => 1,
+                    'block_review_infra' => 1,
+                    'block_vpn' => 0,
+                    'block_tor' => 1,
+                    'block_headless' => 0,
+                    'block_curl' => 1,
+                    'allowed_countries' => 'GB',
+                    'blocked_countries' => 'RU,UA',
+                    'allowed_clients' => 'threads',
+                    'blocked_clients' => 'facebook',
+                    'allowed_devices' => 'tablet',
+                    'blocked_devices' => 'mobile',
+                    'allowed_os' => 'Android',
+                    'blocked_os' => 'iOS',
+                    'os_min_versions' => 'Android>=14.10',
+                    'allowed_languages' => 'fr',
+                    'blocked_languages' => 'de',
+                    'allowed_referrers' => 'https://threads.net/*',
+                    'blocked_referrers' => 'https://blocked.example/*',
+                    'allow_empty_referer' => 1,
+                    'required_url_params' => 'campaign=*',
+                    'blocked_url_params' => 'debug=*',
+                    'required_url_keywords' => 'gclid',
+                    'allowed_resolutions' => 'tablet',
+                    'blocked_resolutions' => 'iphone',
+                    'require_screen_info' => 0,
+                    'single_visit_only' => 1,
+                    'offer_urls' => "https://offers.example/c\nhttps://offers.example/d",
+                    'rotation_mode' => 'random',
+                    'offer_routes' => "CA=https://offers.example/ca\n*=https://offers.example/fallback",
+                    'offer_method' => 'redirect',
+                    'forward_utms' => 0,
+                    'no_cache' => 1,
+                    'fast_mode' => 0,
+                    'delay_start' => 2,
+                    'delay_permanent' => 1,
+                    'allow_geo_override' => 0,
+                ]
+            );
+
+            $this->stopServer($server['process']);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_admin_link_form_create_and_update_persist_all_fields(): void
+    {
+        $runtime = $this->createRuntimeApp(
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'owner', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'owner-api-key']);
+                $db->prepare("INSERT INTO domains (id, user_id, domain, is_system, is_active) VALUES (1, 1, 'go.example.com', 0, 1)")
+                    ->execute();
+            }
+        );
+
+        try {
+            $db = new PDO('sqlite:' . $runtime['dbPath']);
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $cookie = $this->loginToAdmin($server['port']);
+
+            $linksPage = $this->httpRequest($server['port'], 'GET', '/admin/links.php', ['Cookie' => $cookie]);
+            $createResponse = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/admin/links.php',
+                [
+                    'Content-Type' => 'application/x-www-form-urlencoded',
+                    'Cookie' => $cookie,
+                ],
+                http_build_query([
+                    '_csrf' => $this->extractCsrfToken($linksPage['body']),
+                    'action' => 'create',
+                    'slug' => 'promo',
+                    'name' => 'Promo Link',
+                    'domain_id' => '1',
+                    'offer_url' => 'https://offers.example/link-base',
+                    'white_page' => '<p>link white</p>',
+                    'redirect_type' => '303',
+                    'redirect_delay' => '4',
+                    'block_datacenters' => '1',
+                    'block_vpn' => '1',
+                    'block_tor' => '1',
+                    'block_curl' => '1',
+                    'allowed_countries' => 'US',
+                    'blocked_countries' => 'BR',
+                    'allowed_clients' => 'facebook',
+                    'blocked_clients' => 'tiktok',
+                    'allowed_devices' => 'desktop',
+                    'blocked_devices' => 'mobile',
+                    'allowed_os' => 'Windows',
+                    'blocked_os' => 'Android',
+                    'os_min_versions' => 'Windows>=11',
+                    'allowed_languages' => 'en',
+                    'blocked_languages' => 'es',
+                    'allowed_referrers' => 'https://google.com/*',
+                    'blocked_referrers' => 'https://evil.example/*',
+                    'required_url_params' => 'utm_source=*',
+                    'blocked_url_params' => 'utm_bad=*',
+                    'required_url_keywords' => 'cid',
+                    'allowed_resolutions' => 'pc',
+                    'blocked_resolutions' => 'tablet',
+                    'single_visit_only' => '1',
+                    'offer_urls' => "https://offers.example/link-a\nhttps://offers.example/link-b",
+                    'rotation_mode' => 'sequential',
+                    'offer_routes' => "US=https://offers.example/us\n*=https://offers.example/world",
+                    'offer_method' => 'iframe',
+                    'forward_utms' => '1',
+                    'no_cache' => '1',
+                    'delay_start' => '11',
+                    'allow_geo_override' => '1',
+                ])
+            );
+
+            $this->assertSame(200, $createResponse['status']);
+            $this->assertRowMatches(
+                $db->query('SELECT * FROM links WHERE id = 1')->fetch(),
+                [
+                    'slug' => 'promo',
+                    'name' => 'Promo Link',
+                    'campaign_id' => null,
+                    'domain_id' => 1,
+                    'offer_url' => 'https://offers.example/link-base',
+                    'white_page' => '<p>link white</p>',
+                    'is_active' => 0,
+                    'redirect_type' => '303',
+                    'redirect_delay' => 4,
+                    'block_bots' => 0,
+                    'block_datacenters' => 1,
+                    'block_review_infra' => 0,
+                    'block_vpn' => 1,
+                    'block_tor' => 1,
+                    'block_headless' => 0,
+                    'block_curl' => 1,
+                    'allowed_countries' => 'US',
+                    'blocked_countries' => 'BR',
+                    'allowed_clients' => 'facebook',
+                    'blocked_clients' => 'tiktok',
+                    'allowed_devices' => 'desktop',
+                    'blocked_devices' => 'mobile',
+                    'allowed_os' => 'Windows',
+                    'blocked_os' => 'Android',
+                    'os_min_versions' => 'Windows>=11',
+                    'allowed_languages' => 'en',
+                    'blocked_languages' => 'es',
+                    'allowed_referrers' => 'https://google.com/*',
+                    'blocked_referrers' => 'https://evil.example/*',
+                    'allow_empty_referer' => 0,
+                    'required_url_params' => 'utm_source=*',
+                    'blocked_url_params' => 'utm_bad=*',
+                    'required_url_keywords' => 'cid',
+                    'allowed_resolutions' => 'pc',
+                    'blocked_resolutions' => 'tablet',
+                    'require_screen_info' => 0,
+                    'single_visit_only' => 1,
+                    'offer_urls' => "https://offers.example/link-a\nhttps://offers.example/link-b",
+                    'rotation_mode' => 'sequential',
+                    'offer_routes' => "US=https://offers.example/us\n*=https://offers.example/world",
+                    'offer_method' => 'iframe',
+                    'forward_utms' => 1,
+                    'no_cache' => 1,
+                    'fast_mode' => 0,
+                    'delay_start' => 11,
+                    'delay_permanent' => 0,
+                    'allow_geo_override' => 1,
+                ]
+            );
+
+            $linkEditPage = $this->httpRequest($server['port'], 'GET', '/admin/links.php?edit=1', ['Cookie' => $cookie]);
+            $updateResponse = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/admin/links.php',
+                [
+                    'Content-Type' => 'application/x-www-form-urlencoded',
+                    'Cookie' => $cookie,
+                ],
+                http_build_query([
+                    '_csrf' => $this->extractCsrfToken($linkEditPage['body']),
+                    'action' => 'update',
+                    'id' => '1',
+                    'name' => 'Promo Updated',
+                    'is_active' => '1',
+                    'offer_url' => 'https://offers.example/link-updated',
+                    'white_page' => '<div>updated</div>',
+                    'redirect_type' => 'meta',
+                    'redirect_delay' => '2',
+                    'block_bots' => '1',
+                    'block_review_infra' => '1',
+                    'block_headless' => '1',
+                    'allowed_countries' => 'CA',
+                    'blocked_countries' => 'MX',
+                    'allowed_clients' => 'threads',
+                    'blocked_clients' => 'facebook',
+                    'allowed_devices' => 'tablet',
+                    'blocked_devices' => 'desktop',
+                    'allowed_os' => 'iOS',
+                    'blocked_os' => 'Windows',
+                    'os_min_versions' => 'iOS>=14.10',
+                    'allowed_languages' => 'fr',
+                    'blocked_languages' => 'de',
+                    'allowed_referrers' => 'https://threads.net/*',
+                    'blocked_referrers' => 'https://blocked.example/*',
+                    'allow_empty_referer' => '1',
+                    'required_url_params' => 'campaign=*',
+                    'blocked_url_params' => 'debug=*',
+                    'required_url_keywords' => 'gclid',
+                    'allowed_resolutions' => 'tablet',
+                    'blocked_resolutions' => 'iphone',
+                    'require_screen_info' => '1',
+                    'offer_urls' => "https://offers.example/link-c\nhttps://offers.example/link-d",
+                    'rotation_mode' => 'random',
+                    'offer_routes' => "CA=https://offers.example/ca\n*=https://offers.example/fallback",
+                    'offer_method' => 'redirect',
+                    'fast_mode' => '1',
+                    'delay_start' => '5',
+                    'delay_permanent' => '1',
+                ])
+            );
+
+            $this->assertSame(200, $updateResponse['status']);
+            $this->assertRowMatches(
+                $db->query('SELECT * FROM links WHERE id = 1')->fetch(),
+                [
+                    'slug' => 'promo',
+                    'name' => 'Promo Updated',
+                    'campaign_id' => null,
+                    'domain_id' => null,
+                    'offer_url' => 'https://offers.example/link-updated',
+                    'white_page' => '<div>updated</div>',
+                    'is_active' => 1,
+                    'redirect_type' => 'meta',
+                    'redirect_delay' => 2,
+                    'block_bots' => 1,
+                    'block_datacenters' => 0,
+                    'block_review_infra' => 1,
+                    'block_vpn' => 0,
+                    'block_tor' => 0,
+                    'block_headless' => 1,
+                    'block_curl' => 0,
+                    'allowed_countries' => 'CA',
+                    'blocked_countries' => 'MX',
+                    'allowed_clients' => 'threads',
+                    'blocked_clients' => 'facebook',
+                    'allowed_devices' => 'tablet',
+                    'blocked_devices' => 'desktop',
+                    'allowed_os' => 'iOS',
+                    'blocked_os' => 'Windows',
+                    'os_min_versions' => 'iOS>=14.10',
+                    'allowed_languages' => 'fr',
+                    'blocked_languages' => 'de',
+                    'allowed_referrers' => 'https://threads.net/*',
+                    'blocked_referrers' => 'https://blocked.example/*',
+                    'allow_empty_referer' => 1,
+                    'required_url_params' => 'campaign=*',
+                    'blocked_url_params' => 'debug=*',
+                    'required_url_keywords' => 'gclid',
+                    'allowed_resolutions' => 'tablet',
+                    'blocked_resolutions' => 'iphone',
+                    'require_screen_info' => 1,
+                    'single_visit_only' => 0,
+                    'offer_urls' => "https://offers.example/link-c\nhttps://offers.example/link-d",
+                    'rotation_mode' => 'random',
+                    'offer_routes' => "CA=https://offers.example/ca\n*=https://offers.example/fallback",
+                    'offer_method' => 'redirect',
+                    'forward_utms' => 0,
+                    'no_cache' => 0,
+                    'fast_mode' => 1,
+                    'delay_start' => 5,
+                    'delay_permanent' => 1,
+                    'allow_geo_override' => 0,
+                ]
+            );
+
+            $this->stopServer($server['process']);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_admin_link_update_rejects_cross_tenant_campaign_and_domain_ids(): void
+    {
+        $runtime = $this->createRuntimeApp(
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'owner', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'owner-api-key']);
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([2, 'other', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'other-api-key']);
+                $db->prepare("
+                    INSERT INTO links (id, user_id, slug, name, offer_url, white_page, is_active, domain_id)
+                    VALUES (1, 1, 'promo', 'Promo Link', 'https://offers.example/original', '<p>white</p>', 1, NULL)
+                ")->execute();
+                $db->prepare("
+                    INSERT INTO campaigns (id, user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay)
+                    VALUES (9, 2, 'Other Campaign', 1, 'https://offers.example/other', '', 'white', 403, '302', 0)
+                ")->execute();
+                $db->prepare("INSERT INTO domains (id, user_id, domain, is_system, is_active) VALUES (9, 2, 'other.example.com', 0, 1)")
+                    ->execute();
+            }
+        );
+
+        try {
+            $db = new PDO('sqlite:' . $runtime['dbPath']);
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $cookie = $this->loginToAdmin($server['port']);
+            $editPage = $this->httpRequest($server['port'], 'GET', '/admin/links.php?edit=1', ['Cookie' => $cookie]);
+
+            $response = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/admin/links.php',
+                [
+                    'Content-Type' => 'application/x-www-form-urlencoded',
+                    'Cookie' => $cookie,
+                ],
+                http_build_query([
+                    '_csrf' => $this->extractCsrfToken($editPage['body']),
+                    'action' => 'update',
+                    'id' => '1',
+                    'name' => 'Tampered',
+                    'campaign_id' => '9',
+                    'domain_id' => '9',
+                    'offer_url' => 'https://offers.example/tampered',
+                ])
+            );
+
+            $row = $db->query('SELECT * FROM links WHERE id = 1')->fetch();
+
+            $this->assertSame(400, $response['status']);
+            $this->assertSame('Promo Link', (string) $row['name']);
+            $this->assertSame(null, $row['campaign_id']);
+            $this->assertSame(null, $row['domain_id']);
+
+            $this->stopServer($server['process']);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_admin_domain_delete_is_blocked_while_links_still_reference_it(): void
+    {
+        $runtime = $this->createRuntimeApp(
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'owner', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'owner-api-key']);
+                $db->prepare("INSERT INTO domains (id, user_id, domain, is_system, is_active) VALUES (1, 1, 'go.example.com', 0, 1)")
+                    ->execute();
+                $db->prepare("
+                    INSERT INTO links (id, user_id, slug, name, offer_url, white_page, is_active, domain_id)
+                    VALUES (1, 1, 'promo', 'Promo Link', 'https://offers.example/original', '<p>white</p>', 1, 1)
+                ")->execute();
+            }
+        );
+
+        try {
+            $db = new PDO('sqlite:' . $runtime['dbPath']);
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $db->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $cookie = $this->loginToAdmin($server['port']);
+            $domainsPage = $this->httpRequest($server['port'], 'GET', '/admin/domains.php', ['Cookie' => $cookie]);
+
+            $response = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/admin/domains.php',
+                [
+                    'Content-Type' => 'application/x-www-form-urlencoded',
+                    'Cookie' => $cookie,
+                ],
+                http_build_query([
+                    '_csrf' => $this->extractCsrfToken($domainsPage['body']),
+                    'action' => 'delete',
+                    'id' => '1',
+                ])
+            );
+
+            $domainCount = (int) $db->query('SELECT COUNT(*) FROM domains WHERE id = 1')->fetchColumn();
+            $linkDomainId = $db->query('SELECT domain_id FROM links WHERE id = 1')->fetchColumn();
+
+            $this->assertSame(200, $response['status']);
+            $this->assertSame(1, $domainCount);
+            $this->assertSame(1, (int) $linkDomainId);
+
+            $this->stopServer($server['process']);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_api_rejects_malformed_resource_paths_and_wrong_methods(): void
+    {
+        $response = $this->requestSeeded(
+            'GET',
+            '/api/links/foo',
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'api-user', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'test-api-key']);
+                $db->prepare("
+                    INSERT INTO links (id, user_id, slug, name, offer_url, white_page, is_active, domain_id)
+                    VALUES (1, 1, 'promo', 'Promo Link', 'https://offers.example/promo', '', 1, NULL)
+                ")->execute();
+            },
+            ['Authorization' => 'Bearer test-api-key']
+        );
+        $this->assertSame(404, $response['status']);
+
+        $response = $this->requestSeeded(
+            'GET',
+            '/api/links/1/extra',
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'api-user', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'test-api-key']);
+                $db->prepare("
+                    INSERT INTO links (id, user_id, slug, name, offer_url, white_page, is_active, domain_id)
+                    VALUES (1, 1, 'promo', 'Promo Link', 'https://offers.example/promo', '', 1, NULL)
+                ")->execute();
+            },
+            ['Authorization' => 'Bearer test-api-key']
+        );
+        $this->assertSame(404, $response['status']);
+
+        $response = $this->requestSeeded(
+            'GET',
+            '/api/campaigns/1/clone',
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'api-user', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'test-api-key']);
+                $db->prepare("
+                    INSERT INTO campaigns (id, user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay)
+                    VALUES (1, 1, 'Original', 1, 'https://offers.example/original', '', 'white', 403, '302', 0)
+                ")->execute();
+            },
+            ['Authorization' => 'Bearer test-api-key']
+        );
+        $this->assertSame(405, $response['status']);
+    }
+
+    public function test_public_route_supports_303_redirects(): void
+    {
+        $response = $this->requestSeeded(
+            'GET',
+            '/promo',
+            static function (PDO $db): void {
+                $db->prepare("
+                    INSERT INTO links (user_id, slug, name, offer_url, white_page, is_active, redirect_type)
+                    VALUES (1, 'promo', 'Promo', 'https://offers.example/promo', '', 1, '303')
+                ")->execute();
+            },
+            [
+                'User-Agent' => 'Mozilla/5.0',
+                'Accept' => 'text/html',
+                'Accept-Language' => 'en-US',
+            ]
+        );
+
+        $this->assertSame(303, $response['status']);
+        $this->assertSame('https://offers.example/promo', $response['headers']['location'] ?? '');
+    }
+
+    public function test_public_route_falls_back_to_white_page_when_meta_target_is_invalid(): void
+    {
+        $response = $this->requestSeeded(
+            'GET',
+            '/promo',
+            static function (PDO $db): void {
+                $db->prepare("
+                    INSERT INTO links (user_id, slug, name, offer_url, white_page, is_active, redirect_type)
+                    VALUES (1, 'promo', 'Promo', 'javascript:alert(1)', '<h1>Safe White Page</h1>', 1, 'meta')
+                ")->execute();
+            },
+            [
+                'User-Agent' => 'Mozilla/5.0',
+                'Accept' => 'text/html',
+                'Accept-Language' => 'en-US',
+            ]
+        );
+
+        $this->assertSame(200, $response['status']);
+        $this->assertTrue(str_contains($response['body'], 'Safe White Page'));
+        $this->assertFalse(str_contains($response['body'], 'http-equiv="refresh"'));
     }
 
     private function requestSeeded(
@@ -737,6 +1420,57 @@ PHP;
             'headers' => $parsedHeaders,
             'body' => $responseBody,
         ];
+    }
+
+    private function loginToAdmin(int $port, string $username = 'owner', string $password = 'StrongPass123!'): string
+    {
+        $loginPage = $this->httpRequest($port, 'GET', '/admin/login.php');
+        $response = $this->httpRequest(
+            $port,
+            'POST',
+            '/admin/login.php',
+            [
+                'Content-Type' => 'application/x-www-form-urlencoded',
+                'Cookie' => $this->extractCookieHeader($loginPage['headers'], 'cloaksess'),
+            ],
+            http_build_query([
+                '_csrf' => $this->extractCsrfToken($loginPage['body']),
+                'username' => $username,
+                'password' => $password,
+            ])
+        );
+
+        if ($response['status'] !== 302) {
+            throw new RuntimeException('Unable to authenticate test administrator.');
+        }
+
+        $cookie = $this->extractCookieHeader($response['headers'], 'cloaksess');
+        if ($cookie !== '') {
+            return $cookie;
+        }
+
+        return $this->extractCookieHeader($loginPage['headers'], 'cloaksess');
+    }
+
+    private function assertRowMatches(array|false $row, array $expected): void
+    {
+        if (!is_array($row)) {
+            $this->fail('Expected database row, got none.');
+        }
+
+        foreach ($expected as $column => $value) {
+            if ($value === null) {
+                $this->assertSame(null, $row[$column] ?? null, "Column {$column} mismatch");
+                continue;
+            }
+
+            if (is_int($value)) {
+                $this->assertSame($value, (int) ($row[$column] ?? 0), "Column {$column} mismatch");
+                continue;
+            }
+
+            $this->assertSame($value, (string) ($row[$column] ?? ''), "Column {$column} mismatch");
+        }
     }
 
     /**

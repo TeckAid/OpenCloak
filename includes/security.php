@@ -248,6 +248,33 @@ function app_scalar_value(mixed $value, string $label, int $maxBytes = 4096): ?s
     return $stringValue;
 }
 
+function app_array_flag(array $input, string $name, int $default = 0, bool $preserveMissing = false): int
+{
+    if (!array_key_exists($name, $input)) {
+        return $preserveMissing ? $default : 0;
+    }
+
+    return ((int) app_scalar_value($input[$name], $name, 32)) ? 1 : 0;
+}
+
+function app_array_clamped_int(
+    array $input,
+    string $name,
+    int $default,
+    int $min,
+    int $max,
+    bool $preserveMissing = false,
+    ?string $label = null
+): int {
+    if (!array_key_exists($name, $input)) {
+        return $preserveMissing ? $default : $min;
+    }
+
+    $value = (int) (app_scalar_value($input[$name], $label ?? $name, 64) ?? (string) $default);
+
+    return max($min, min($max, $value));
+}
+
 function app_abort_request(int $status, string $message): never
 {
     $isApi = strpos((string) ($_SERVER['REQUEST_URI'] ?? ''), '/api') === 0;

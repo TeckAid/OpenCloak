@@ -48,17 +48,17 @@ function wildcard_match_list(string $csvList, string $haystack): bool
 }
 
 /**
- * Parse "OS>=14.0,Android>=10" into ['ios' => 14.0, 'android' => 10].
+ * Parse "OS>=14.0,Android>=10" into ['ios' => '14.0', 'android' => '10'].
  */
 function parse_os_min_versions(string $spec): array
 {
     $out = [];
     foreach (explode(',', $spec) as $entry) {
         $entry = trim($entry);
-        if ($entry === '' || !preg_match('/^([a-zA-Z0-9 ._-]+)>=([0-9]+(?:\.[0-9]+)?)$/', $entry, $m)) {
+        if ($entry === '' || !preg_match('/^([a-zA-Z0-9 ._-]+)>=([0-9]+(?:\.[0-9]+)*)$/', $entry, $m)) {
             continue;
         }
-        $out[strtolower(trim($m[1]))] = (float)$m[2];
+        $out[strtolower(trim($m[1]))] = $m[2];
     }
     return $out;
 }
@@ -66,9 +66,19 @@ function parse_os_min_versions(string $spec): array
 /**
  * Compare dotted numeric versions numerically.
  */
-function version_at_least(string $have, float $need): bool
+function version_at_least(string $have, string $need): bool
 {
-    return ((float)preg_replace('/[^0-9.]/', '', $have) ?: 0) >= $need;
+    $have = trim((string) preg_replace('/[^0-9.]/', '', $have));
+    $need = trim((string) preg_replace('/[^0-9.]/', '', $need));
+
+    if ($need === '') {
+        return true;
+    }
+    if ($have === '') {
+        return false;
+    }
+
+    return version_compare($have, $need, '>=');
 }
 
 /**
@@ -213,6 +223,58 @@ const IN_APP_CLIENTS = [
     'line', 'kakaotalk', 'wechat', 'telegram', 'snapchat',
 ];
 
+const RULE_COLUMNS = [
+    'block_bots', 'block_datacenters', 'block_review_infra', 'block_vpn', 'block_tor', 'block_headless', 'block_curl',
+    'allowed_countries', 'blocked_countries',
+    'allowed_clients', 'blocked_clients',
+    'allowed_devices', 'blocked_devices',
+    'allowed_os', 'blocked_os', 'os_min_versions',
+    'allowed_languages', 'blocked_languages',
+    'allowed_referrers', 'blocked_referrers', 'allow_empty_referer',
+    'required_url_params', 'blocked_url_params', 'required_url_keywords',
+    'allowed_resolutions', 'blocked_resolutions',
+    'require_screen_info', 'single_visit_only',
+    'offer_urls', 'rotation_mode', 'offer_routes',
+    'offer_method', 'forward_utms', 'no_cache', 'fast_mode',
+    'delay_start', 'delay_permanent', 'allow_geo_override',
+];
+
+const FLAG_COLUMNS = [
+    'is_active',
+    'block_bots', 'block_datacenters', 'block_review_infra', 'block_vpn', 'block_tor', 'block_headless', 'block_curl',
+    'allow_empty_referer', 'require_screen_info', 'single_visit_only',
+    'forward_utms', 'no_cache', 'fast_mode', 'delay_permanent', 'allow_geo_override',
+];
+
+const REDIRECT_TYPES = ['301', '302', '303', 'meta'];
+const ROTATION_MODES = ['single', 'random', 'sequential'];
+const OFFER_METHODS = ['redirect', 'iframe'];
+const REJECT_MODES = ['white', 'error'];
+
+const CAMPAIGN_MUTABLE_COLUMNS = [
+    'name', 'is_active', 'offer_url', 'white_page', 'reject_mode', 'reject_code', 'redirect_type', 'redirect_delay',
+    'block_bots', 'block_datacenters', 'block_review_infra', 'block_vpn', 'block_tor', 'block_headless', 'block_curl',
+    'allowed_countries', 'blocked_countries', 'allowed_clients', 'blocked_clients',
+    'allowed_devices', 'blocked_devices', 'allowed_os', 'blocked_os', 'os_min_versions',
+    'allowed_languages', 'blocked_languages', 'allowed_referrers', 'blocked_referrers', 'allow_empty_referer',
+    'required_url_params', 'blocked_url_params', 'required_url_keywords',
+    'allowed_resolutions', 'blocked_resolutions', 'require_screen_info', 'single_visit_only',
+    'offer_urls', 'rotation_mode', 'offer_routes',
+    'offer_method', 'forward_utms', 'no_cache', 'fast_mode', 'delay_start', 'delay_permanent', 'allow_geo_override',
+];
+
+const LINK_MUTABLE_COLUMNS = [
+    'name', 'campaign_id', 'domain_id', 'offer_url', 'white_page', 'redirect_type', 'redirect_delay', 'is_active',
+    'block_bots', 'block_datacenters', 'block_review_infra', 'block_vpn', 'block_tor', 'block_headless', 'block_curl',
+    'allowed_countries', 'blocked_countries', 'allowed_clients', 'blocked_clients',
+    'allowed_devices', 'blocked_devices', 'allowed_os', 'blocked_os', 'os_min_versions',
+    'allowed_languages', 'blocked_languages', 'allowed_referrers', 'blocked_referrers', 'allow_empty_referer',
+    'required_url_params', 'blocked_url_params', 'required_url_keywords',
+    'allowed_resolutions', 'blocked_resolutions', 'require_screen_info', 'single_visit_only',
+    'offer_urls', 'rotation_mode', 'offer_routes',
+    'offer_method', 'forward_utms', 'no_cache', 'fast_mode', 'delay_start', 'delay_permanent', 'allow_geo_override',
+];
+
 /**
  * Parse an offer pool: one URL per line (or comma-separated).
  * Returns only valid http(s) URLs, in order.
@@ -247,6 +309,282 @@ function parse_offer_routes(string $spec): array
     return $routes;
 }
 
+function normalize_redirect_type(string $value): string
+{
+    return in_array($value, REDIRECT_TYPES, true) ? $value : '302';
+}
+
+function normalize_rotation_mode(string $value): string
+{
+    return in_array($value, ROTATION_MODES, true) ? $value : 'single';
+}
+
+function normalize_offer_method(string $value): string
+{
+    return in_array($value, OFFER_METHODS, true) ? $value : 'redirect';
+}
+
+function normalize_reject_mode(string $value): string
+{
+    return in_array($value, REJECT_MODES, true) ? $value : 'white';
+}
+
+function parse_campaign_input(array $input, array $existing = [], array $options = []): array
+{
+    $source = (($options['source'] ?? 'form') === 'api') ? 'api' : 'form';
+    $partial = !empty($options['partial']);
+    $rules = parse_rule_input($input, $existing, $source, $partial);
+
+    $offerUrl = parse_input_string($input, 'offer_url', 2048, $existing, $partial);
+    if ($offerUrl !== '' && !is_valid_offer_url($offerUrl)) {
+        throw new BadRequestException('Invalid offer_url.', 400);
+    }
+
+    return array_merge([
+        'name' => parse_input_string($input, 'name', 255, $existing, $partial),
+        'is_active' => parse_input_flag($input, 'is_active', (int) ($existing['is_active'] ?? 0), $source, $partial),
+        'offer_url' => $offerUrl,
+        'white_page' => parse_input_raw_string($input, 'white_page', 65535, $existing, $partial),
+        'reject_mode' => normalize_reject_mode(parse_input_string($input, 'reject_mode', 32, $existing, $partial, 'white')),
+        'reject_code' => parse_input_int($input, 'reject_code', (int) ($existing['reject_code'] ?? 403), 400, 599, $partial),
+        'redirect_type' => normalize_redirect_type(parse_input_string($input, 'redirect_type', 32, $existing, $partial, '302')),
+        'redirect_delay' => parse_input_int($input, 'redirect_delay', (int) ($existing['redirect_delay'] ?? 0), 0, 30, $partial),
+    ], $rules);
+}
+
+function parse_link_input(array $input, array $existing = [], array $options = []): array
+{
+    $source = (($options['source'] ?? 'form') === 'api') ? 'api' : 'form';
+    $partial = !empty($options['partial']);
+    $campaignId = parse_input_nullable_id($input, 'campaign_id', $existing, $partial);
+    $domainId = parse_input_nullable_id($input, 'domain_id', $existing, $partial);
+    $rules = parse_rule_input($input, $existing, $source, $partial);
+
+    $slug = parse_input_string($input, 'slug', 128, $existing, $partial);
+    if ($slug === '' && !$partial && empty($existing)) {
+        $slug = bin2hex(random_bytes(6));
+    }
+    if ($slug !== '' && !is_valid_slug($slug)) {
+        throw new BadRequestException('Invalid slug.', 400);
+    }
+
+    $offerUrl = parse_input_string($input, 'offer_url', 2048, $existing, $partial);
+    if ($offerUrl !== '' && !is_valid_offer_url($offerUrl)) {
+        throw new BadRequestException('Invalid offer_url.', 400);
+    }
+
+    if ($campaignId === null && $offerUrl === '' && $rules['offer_urls'] === '' && $rules['offer_routes'] === '') {
+        throw new BadRequestException('Offer URL, pool, or routes are required.', 400);
+    }
+
+    return array_merge([
+        'slug' => $slug,
+        'name' => parse_input_string($input, 'name', 255, $existing, $partial),
+        'campaign_id' => $campaignId,
+        'domain_id' => $domainId,
+        'offer_url' => $campaignId === null ? $offerUrl : '',
+        'white_page' => parse_input_raw_string($input, 'white_page', 65535, $existing, $partial),
+        'redirect_type' => normalize_redirect_type(parse_input_string($input, 'redirect_type', 32, $existing, $partial, '302')),
+        'redirect_delay' => parse_input_int($input, 'redirect_delay', (int) ($existing['redirect_delay'] ?? 0), 0, 30, $partial),
+        'is_active' => parse_input_flag($input, 'is_active', (int) ($existing['is_active'] ?? 0), $source, $partial),
+    ], $rules);
+}
+
+function parse_rule_input(array $input, array $existing, string $source, bool $partial): array
+{
+    $out = [];
+    foreach (RULE_COLUMNS as $column) {
+        if (in_array($column, FLAG_COLUMNS, true)) {
+            $out[$column] = parse_input_flag($input, $column, (int) ($existing[$column] ?? 0), $source, $partial);
+            continue;
+        }
+
+        if ($column === 'rotation_mode') {
+            $out[$column] = normalize_rotation_mode(parse_input_string($input, $column, 32, $existing, $partial, 'single'));
+            continue;
+        }
+
+        if ($column === 'offer_method') {
+            $out[$column] = normalize_offer_method(parse_input_string($input, $column, 32, $existing, $partial, 'redirect'));
+            continue;
+        }
+
+        if ($column === 'delay_start') {
+            $out[$column] = parse_input_int($input, $column, (int) ($existing[$column] ?? 0), 0, 100000, $partial);
+            continue;
+        }
+
+        if ($column === 'offer_urls') {
+            $out[$column] = normalize_offer_urls_spec(parse_input_raw_string($input, $column, 16384, $existing, $partial), $column);
+            continue;
+        }
+
+        if ($column === 'offer_routes') {
+            $out[$column] = normalize_offer_routes_spec(parse_input_raw_string($input, $column, 16384, $existing, $partial), $column);
+            continue;
+        }
+
+        $out[$column] = parse_input_string($input, $column, 4096, $existing, $partial);
+    }
+
+    return $out;
+}
+
+function parse_input_string(array $input, string $name, int $maxBytes, array $existing, bool $partial, string $default = ''): string
+{
+    if (array_key_exists($name, $input)) {
+        return trim(app_scalar_value($input[$name], $name, $maxBytes) ?? '');
+    }
+
+    if ($partial) {
+        return trim((string) ($existing[$name] ?? $default));
+    }
+
+    return $default;
+}
+
+function parse_input_raw_string(array $input, string $name, int $maxBytes, array $existing, bool $partial, string $default = ''): string
+{
+    if (array_key_exists($name, $input)) {
+        return (string) (app_scalar_value($input[$name], $name, $maxBytes) ?? '');
+    }
+
+    if ($partial) {
+        return (string) ($existing[$name] ?? $default);
+    }
+
+    return $default;
+}
+
+function parse_input_flag(array $input, string $name, int $default, string $source, bool $partial): int
+{
+    if ($source === 'form') {
+        return app_array_flag($input, $name, $default, $partial);
+    }
+
+    if (array_key_exists($name, $input)) {
+        return app_array_flag($input, $name, $default, true);
+    }
+
+    return $partial ? $default : 0;
+}
+
+function parse_input_int(array $input, string $name, int $default, int $min, int $max, bool $partial): int
+{
+    return app_array_clamped_int($input, $name, $default, $min, $max, $partial, $name);
+}
+
+function parse_input_nullable_id(array $input, string $name, array $existing, bool $partial): ?int
+{
+    if (array_key_exists($name, $input)) {
+        $value = trim(app_scalar_value($input[$name], $name, 64) ?? '');
+        if ($value === '') {
+            return null;
+        }
+
+        $id = (int) $value;
+        return $id > 0 ? $id : null;
+    }
+
+    if ($partial && array_key_exists($name, $existing)) {
+        $id = (int) $existing[$name];
+        return $id > 0 ? $id : null;
+    }
+
+    return null;
+}
+
+function normalize_offer_urls_spec(string $spec, string $label = 'offer_urls'): string
+{
+    if (trim($spec) === '') {
+        return '';
+    }
+
+    $urls = [];
+    foreach (preg_split('/[\r\n,]+/', $spec) as $candidate) {
+        $candidate = trim((string) $candidate);
+        if ($candidate === '') {
+            continue;
+        }
+        if (!is_valid_offer_url($candidate)) {
+            throw new BadRequestException("Invalid {$label}.", 400);
+        }
+        if (!in_array($candidate, $urls, true)) {
+            $urls[] = $candidate;
+        }
+    }
+
+    return implode("\n", $urls);
+}
+
+function normalize_offer_routes_spec(string $spec, string $label = 'offer_routes'): string
+{
+    if (trim($spec) === '') {
+        return '';
+    }
+
+    $routes = [];
+    foreach (preg_split('/[\r\n]+/', $spec) as $line) {
+        $line = trim((string) $line);
+        if ($line === '') {
+            continue;
+        }
+        if (!preg_match('/^(\*|[A-Za-z]{2})\s*[:=]\s*(.+)$/', $line, $matches)) {
+            throw new BadRequestException("Invalid {$label}.", 400);
+        }
+
+        $country = strtoupper($matches[1]);
+        $url = trim($matches[2]);
+        if (!is_valid_offer_url($url)) {
+            throw new BadRequestException("Invalid {$label}.", 400);
+        }
+
+        $routes[$country] = $country . '=' . $url;
+    }
+
+    return implode("\n", array_values($routes));
+}
+
+function owned_row(PDO $db, string $table, int $id, int $userId): ?array
+{
+    $stmt = $db->prepare("SELECT * FROM {$table} WHERE id = ? AND user_id = ?");
+    $stmt->execute([$id, $userId]);
+
+    return $stmt->fetch() ?: null;
+}
+
+function delete_campaign_safely(PDO $db, int $userId, int $campaignId): ?string
+{
+    $linkCount = referenced_link_count($db, 'campaign_id', $userId, $campaignId);
+    if ($linkCount > 0) {
+        return 'Campaign is still assigned to one or more links.';
+    }
+
+    $db->prepare('DELETE FROM campaigns WHERE id = ? AND user_id = ?')->execute([$campaignId, $userId]);
+
+    return null;
+}
+
+function delete_domain_safely(PDO $db, int $userId, int $domainId): ?string
+{
+    $linkCount = referenced_link_count($db, 'domain_id', $userId, $domainId);
+    if ($linkCount > 0) {
+        return 'Domain is still assigned to one or more links. Reassign those links first.';
+    }
+
+    $db->prepare('DELETE FROM domains WHERE id = ? AND user_id = ?')->execute([$domainId, $userId]);
+
+    return null;
+}
+
+function referenced_link_count(PDO $db, string $column, int $userId, int $id): int
+{
+    $stmt = $db->prepare("SELECT COUNT(*) FROM links WHERE user_id = ? AND {$column} = ?");
+    $stmt->execute([$userId, $id]);
+
+    return (int) $stmt->fetchColumn();
+}
+
 /**
  * Resolve the final offer target for a visitor:
  *  1. country route (exact match, then "*" fallback)
@@ -278,6 +616,18 @@ function resolve_offer_target(array $rules, string $country, int $offerShows): s
     return (string)($rules['offer_url'] ?? '');
 }
 
+function build_delivery_config(array $rules, string $country, int $offerShows): array
+{
+    $target = resolve_offer_target($rules, $country, $offerShows);
+
+    return [
+        'offer_url' => is_valid_offer_url($target) ? $target : '',
+        'offer_method' => normalize_offer_method((string) ($rules['offer_method'] ?? 'redirect')),
+        'redirect_type' => normalize_redirect_type((string) ($rules['redirect_type'] ?? '302')),
+        'redirect_delay' => max(0, min(30, (int) ($rules['redirect_delay'] ?? 0))),
+    ];
+}
+
 /**
  * Delay-start filter: block the first N unique IPs for a link/campaign.
  * Mirrors the reference script's DELAY_START / DELAY_PERMANENT behavior:
@@ -294,23 +644,36 @@ function delay_start_check(PDO $db, int $scopeId, bool $isCampaign, string $ip, 
     $permanent = !empty($rules['delay_permanent']);
     $hash = hash('sha256', $ip);
     $col = $isCampaign ? 'campaign_id' : 'link_id';
+    $db->exec('BEGIN IMMEDIATE');
 
-    $stmt = $db->prepare("SELECT COUNT(*) FROM delay_ips WHERE {$col} = ?");
-    $stmt->execute([$scopeId]);
-    $count = (int)$stmt->fetchColumn();
+    try {
+        $stmt = $db->prepare("SELECT COUNT(*) FROM delay_ips WHERE {$col} = ?");
+        $stmt->execute([$scopeId]);
+        $count = (int) $stmt->fetchColumn();
 
-    $stmt = $db->prepare("SELECT COUNT(*) FROM delay_ips WHERE {$col} = ? AND ip_hash = ?");
-    $stmt->execute([$scopeId, $hash]);
-    $seen = (int)$stmt->fetchColumn() > 0;
+        $stmt = $db->prepare("SELECT COUNT(*) FROM delay_ips WHERE {$col} = ? AND ip_hash = ?");
+        $stmt->execute([$scopeId, $hash]);
+        $seen = (int) $stmt->fetchColumn() > 0;
 
-    if ($seen) {
-        return ($permanent || $count <= $limit) ? 'delay_start' : '';
+        if ($seen) {
+            $db->commit();
+            return ($permanent || $count < $limit) ? 'delay_start' : '';
+        }
+
+        if ($count < $limit) {
+            $db->prepare("INSERT INTO delay_ips ({$col}, ip_hash) VALUES (?, ?)")->execute([$scopeId, $hash]);
+            $db->commit();
+            return 'delay_start';
+        }
+
+        $db->commit();
+        return '';
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
     }
-    if ($count <= $limit) {
-        $db->prepare("INSERT INTO delay_ips ({$col}, ip_hash) VALUES (?, ?)")->execute([$scopeId, $hash]);
-        return 'delay_start';
-    }
-    return '';
 }
 
 /**

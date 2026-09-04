@@ -6,6 +6,7 @@
 require_once __DIR__ . '/../includes/bootstrap.php';
 boot_app(true);
 require_once __DIR__ . '/../includes/auth.php';
+require_once __DIR__ . '/../includes/rules.php';
 
 require_login();
 
@@ -47,14 +48,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } elseif ($action === 'delete') {
         $id = (int)($_POST['id'] ?? 0);
-        $stmt = $db->prepare("SELECT * FROM domains WHERE id = ? AND user_id = ?");
-        $stmt->execute([$id, $userId]);
-        $d = $stmt->fetch();
+        $d = owned_row($db, 'domains', $id, $userId);
         if ($d && empty($d['is_system'])) {
-            $db->prepare("UPDATE links SET domain_id = NULL WHERE domain_id = ? AND user_id = ?")->execute([$id, $userId]);
-            $db->prepare("DELETE FROM domains WHERE id = ? AND user_id = ?")->execute([$id, $userId]);
-            $message = 'Domain deleted.';
-            $messageType = 'success';
+            $error = delete_domain_safely($db, $userId, $id);
+            if ($error !== null) {
+                $message = $error;
+                $messageType = 'error';
+            } else {
+                $message = 'Domain deleted.';
+                $messageType = 'success';
+            }
         }
     }
 }

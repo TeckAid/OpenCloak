@@ -207,14 +207,15 @@ if (defined('LOG_ENABLED') && LOG_ENABLED) {
 
 // ---- Route to offer / white page / error ------------------------------------------------
 if ($showOffer) {
-    $offerUrl = resolve_offer_target(
+    $delivery = build_delivery_config(
         $rules,
         (string)($detectionResult['country'] ?? ''),
         (int)($rules['offer_shows'] ?? 0)
     );
+    $offerUrl = $delivery['offer_url'];
 
     // Forward original UTM parameters to the offer (reference-script UTM mode)
-    if (!empty($rules['forward_utms'])) {
+    if ($offerUrl !== '' && !empty($rules['forward_utms'])) {
         $params = $_GET;
         unset($params['_fph'], $params['_fv'], $params['_debug'], $params['clid']);
         if ($params !== []) {
@@ -229,11 +230,13 @@ if ($showOffer) {
         header('Expires: ' . gmdate('D, d M Y H:i:s \G\M\T', time() - 86400));
     }
 
-    $offerMethod = (string)($rules['offer_method'] ?? 'redirect');
-    $delay = max(0, (int)($rules['redirect_delay'] ?? 0));
-    $redirectType = (string)($rules['redirect_type'] ?? '302');
+    $offerMethod = $delivery['offer_method'];
+    $delay = $delivery['redirect_delay'];
+    $redirectType = $delivery['redirect_type'];
 
-    if ($offerMethod === 'iframe') {
+    if (!is_valid_offer_url($offerUrl)) {
+        $showOffer = false;
+    } elseif ($offerMethod === 'iframe') {
         // Full-page iframe (reference-script OFFER_METHOD=iframe)
         $safeUrl = htmlspecialchars($offerUrl, ENT_QUOTES, 'UTF-8');
         echo "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\">\n"
@@ -244,9 +247,7 @@ if ($showOffer) {
            . "allowfullscreen=\"allowfullscreen\" webkitallowfullscreen=\"webkitallowfullscreen\" mozallowfullscreen=\"mozallowfullscreen\"></iframe>\n"
            . "</body>\n</html>";
         exit;
-    }
-
-    if ($redirectType === 'meta' || $delay > 0) {
+    } elseif ($redirectType === 'meta' || $delay > 0) {
         // Meta-refresh or delayed redirect (client-side)
         $safeUrl = htmlspecialchars($offerUrl, ENT_QUOTES, 'UTF-8');
         echo "<!DOCTYPE html>\n<html>\n<head>\n"
@@ -257,13 +258,9 @@ if ($showOffer) {
            . "</head>\n<body style=\"font-family:sans-serif;text-align:center;padding:4rem\">\n"
            . "<p>Redirecting…</p>\n</body>\n</html>";
         exit;
-    }
-
-    if (!is_valid_offer_url($offerUrl)) {
-        // Invalid final URL: fall through to white page rather than emit a bad header
-        $showOffer = false;
     } else {
-        header('Location: ' . $offerUrl, true, $redirectType === '301' ? 301 : 302);
+        $status = $redirectType === '301' ? 301 : ($redirectType === '303' ? 303 : 302);
+        header('Location: ' . $offerUrl, true, $status);
         exit;
     }
 }

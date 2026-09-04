@@ -20,146 +20,51 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_valid_post();
     $action = $_POST['action'] ?? '';
 
-    if ($action === 'create') {
-        $slug = trim($_POST['slug'] ?? '');
-        $name = trim($_POST['name'] ?? '');
-        $offerUrl = trim($_POST['offer_url'] ?? '');
-        $whitePage = $_POST['white_page'] ?? '';
-        $redirectType = in_array($_POST['redirect_type'] ?? '302', ['301', '302', 'meta'], true) ? $_POST['redirect_type'] : '302';
-        $campaignId = (int)($_POST['campaign_id'] ?? 0) ?: null;
-        $domainId = (int)($_POST['domain_id'] ?? 0) ?: null;
-
-        if ($campaignId !== null) {
-            $c = $db->prepare("SELECT id FROM campaigns WHERE id = ? AND user_id = ?");
-            $c->execute([$campaignId, $userId]);
-            if (!$c->fetch()) {
-                $message = 'Selected campaign not found.';
-                $messageType = 'error';
-                $campaignId = null;
-            }
-        }
-        if ($domainId !== null) {
-            $d = $db->prepare("SELECT id FROM domains WHERE id = ? AND user_id = ?");
-            $d->execute([$domainId, $userId]);
-            if (!$d->fetch()) {
-                $message = 'Selected domain not found.';
-                $messageType = 'error';
-                $domainId = null;
-            }
-        }
-
-        if ($slug === '') $slug = bin2hex(random_bytes(6));
-
-        if (!$message && !is_valid_slug($slug)) {
-            $message = 'Slug can only contain letters, numbers, hyphens and underscores (max 64 chars) and cannot be a reserved word.';
-            $messageType = 'error';
-        } elseif (!$message && $campaignId === null && !is_valid_offer_url($offerUrl)) {
-            $message = 'Offer URL must be a valid http(s) URL (or bind a campaign).';
-            $messageType = 'error';
-        } elseif (!$message) {
-            $check = $db->prepare("SELECT id FROM links WHERE slug = ?");
-            $check->execute([$slug]);
-            if ($check->fetch()) {
-                $message = 'Slug already exists.';
-                $messageType = 'error';
-            } else {
-                $flag = fn(string $k): int => isset($_POST[$k]) ? 1 : 0;
-                $txt = fn(string $k): string => trim($_POST[$k] ?? '');
-
-                $db->prepare("
-                    INSERT INTO links (user_id, slug, name, campaign_id, domain_id, offer_url, white_page, redirect_type, redirect_delay,
-                        block_bots, block_datacenters, block_review_infra, block_vpn, block_tor, block_headless, block_curl,
-                        allowed_countries, blocked_countries, allowed_clients, blocked_clients,
-                        allowed_devices, blocked_devices, allowed_os, blocked_os, os_min_versions,
-                        allowed_languages, blocked_languages, allowed_referrers, blocked_referrers, allow_empty_referer,
-                        required_url_params, blocked_url_params, required_url_keywords,
-                        allowed_resolutions, blocked_resolutions, require_screen_info, single_visit_only,
-                        offer_urls, rotation_mode, offer_routes,
-                        offer_method, forward_utms, no_cache, fast_mode, delay_start, delay_permanent, allow_geo_override)
-                    VALUES (" . implode(',', array_fill(0, 47, '?')) . ")
-                ")->execute([
-                    $userId, $slug, $name, $campaignId, $domainId,
-                    $campaignId === null ? $offerUrl : '',
-                    $whitePage, $redirectType, max(0, min(30, (int)($_POST['redirect_delay'] ?? 0))),
-                    $flag('block_bots'), $flag('block_datacenters'),
-                    $flag('block_review_infra') ? 1 : (isset($_POST['block_review_infra']) ? 0 : 1),
-                    $flag('block_vpn'), $flag('block_tor'), $flag('block_headless'), $flag('block_curl'),
-                    $txt('allowed_countries'), $txt('blocked_countries'), $txt('allowed_clients'), $txt('blocked_clients'),
-                    $txt('allowed_devices'), $txt('blocked_devices'), $txt('allowed_os'), $txt('blocked_os'), $txt('os_min_versions'),
-                    $txt('allowed_languages'), $txt('blocked_languages'), $txt('allowed_referrers'), $txt('blocked_referrers'),
-                    $flag('allow_empty_referer') ? 1 : (isset($_POST['allow_empty_referer']) ? 0 : 1),
-                    $txt('required_url_params'), $txt('blocked_url_params'), $txt('required_url_keywords'),
-                    $txt('allowed_resolutions'), $txt('blocked_resolutions'),
-                    $flag('require_screen_info'), $flag('single_visit_only'),
-                    $txt('offer_urls'),
-                    in_array($txt('rotation_mode'), ['single', 'random', 'sequential'], true) ? $txt('rotation_mode') : 'single',
-                    $txt('offer_routes'),
-                    in_array($txt('offer_method'), ['redirect', 'iframe'], true) ? $txt('offer_method') : 'redirect',
-                    $flag('forward_utms'), $flag('no_cache'), $flag('fast_mode'),
-                    max(0, min(100000, (int)($_POST['delay_start'] ?? 0))),
-                    $flag('delay_permanent'),
-                    $flag('allow_geo_override'),
-                ]);
-                $message = 'Link created successfully!';
-                $messageType = 'success';
-            }
-        }
-    } elseif ($action === 'update') {
+    if ($action === 'create' || $action === 'update') {
         $id = (int)($_POST['id'] ?? 0);
-        $campaignId = (int)($_POST['campaign_id'] ?? 0) ?: null;
-        $domainId = (int)($_POST['domain_id'] ?? 0) ?: null;
-        $offerUrl = trim($_POST['offer_url'] ?? '');
-        $redirectType = in_array($_POST['redirect_type'] ?? '302', ['301', '302', 'meta'], true) ? $_POST['redirect_type'] : '302';
 
-        if ($campaignId === null && !is_valid_offer_url($offerUrl)) {
-            $message = 'Offer URL must be a valid http(s) URL (or bind a campaign).';
-            $messageType = 'error';
-        } else {
-            $flag = fn(string $k): int => isset($_POST[$k]) ? 1 : 0;
-            $txt = fn(string $k): string => trim($_POST[$k] ?? '');
+        try {
+            $existing = [];
+            if ($action === 'update') {
+                $existing = owned_row($db, 'links', $id, $userId) ?: [];
+                if ($existing === []) {
+                    throw new BadRequestException('Link not found.', 404);
+                }
+            }
 
-            $db->prepare("UPDATE links SET
-                name = ?, campaign_id = ?, domain_id = ?, offer_url = ?, white_page = ?, redirect_type = ?, redirect_delay = ?,
-                is_active = ?,
-                block_bots = ?, block_datacenters = ?, block_review_infra = ?, block_vpn = ?, block_tor = ?, block_headless = ?, block_curl = ?,
-                allowed_countries = ?, blocked_countries = ?, allowed_clients = ?, blocked_clients = ?,
-                allowed_devices = ?, blocked_devices = ?, allowed_os = ?, blocked_os = ?, os_min_versions = ?,
-                allowed_languages = ?, blocked_languages = ?, allowed_referrers = ?, blocked_referrers = ?, allow_empty_referer = ?,
-                required_url_params = ?, blocked_url_params = ?, required_url_keywords = ?,
-                allowed_resolutions = ?, blocked_resolutions = ?,
-                require_screen_info = ?, single_visit_only = ?,
-                offer_urls = ?, rotation_mode = ?, offer_routes = ?,
-                offer_method = ?, forward_utms = ?, no_cache = ?, fast_mode = ?, delay_start = ?, delay_permanent = ?, allow_geo_override = ?,
-                updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND user_id = ?")->execute([
-                trim($_POST['name'] ?? ''),
-                $campaignId, $domainId,
-                $campaignId === null ? $offerUrl : '',
-                $_POST['white_page'] ?? '',
-                $redirectType, max(0, min(30, (int)($_POST['redirect_delay'] ?? 0))),
-                $flag('is_active'),
-                $flag('block_bots'), $flag('block_datacenters'),
-                $flag('block_review_infra') ? 1 : (isset($_POST['block_review_infra']) ? 0 : 1),
-                $flag('block_vpn'), $flag('block_tor'), $flag('block_headless'), $flag('block_curl'),
-                $txt('allowed_countries'), $txt('blocked_countries'), $txt('allowed_clients'), $txt('blocked_clients'),
-                $txt('allowed_devices'), $txt('blocked_devices'), $txt('allowed_os'), $txt('blocked_os'), $txt('os_min_versions'),
-                $txt('allowed_languages'), $txt('blocked_languages'), $txt('allowed_referrers'), $txt('blocked_referrers'),
-                $flag('allow_empty_referer') ? 1 : (isset($_POST['allow_empty_referer']) ? 0 : 1),
-                $txt('required_url_params'), $txt('blocked_url_params'), $txt('required_url_keywords'),
-                $txt('allowed_resolutions'), $txt('blocked_resolutions'),
-                $flag('require_screen_info'), $flag('single_visit_only'),
-                $txt('offer_urls'),
-                in_array($txt('rotation_mode'), ['single', 'random', 'sequential'], true) ? $txt('rotation_mode') : 'single',
-                $txt('offer_routes'),
-                in_array($txt('offer_method'), ['redirect', 'iframe'], true) ? $txt('offer_method') : 'redirect',
-                $flag('forward_utms'), $flag('no_cache'), $flag('fast_mode'),
-                max(0, min(100000, (int)($_POST['delay_start'] ?? 0))),
-                $flag('delay_permanent'),
-                $flag('allow_geo_override'),
-                $id, $userId,
-            ]);
-            $message = 'Link updated successfully!';
+            $parsed = parse_link_input($_POST, $existing, ['source' => 'form']);
+            if ($parsed['campaign_id'] !== null && owned_row($db, 'campaigns', $parsed['campaign_id'], $userId) === null) {
+                throw new BadRequestException('Selected campaign not found.', 400);
+            }
+            if ($parsed['domain_id'] !== null && owned_row($db, 'domains', $parsed['domain_id'], $userId) === null) {
+                throw new BadRequestException('Selected domain not found.', 400);
+            }
+
+            if ($action === 'create') {
+                $check = $db->prepare("SELECT id FROM links WHERE slug = ?");
+                $check->execute([$parsed['slug']]);
+                if ($check->fetch()) {
+                    throw new BadRequestException('Slug already exists.', 409);
+                }
+
+                $columns = implode(',', array_merge(['user_id', 'slug'], LINK_MUTABLE_COLUMNS));
+                $values = array_merge([$userId, $parsed['slug']], array_map(static fn(string $column) => $parsed[$column], LINK_MUTABLE_COLUMNS));
+                $db->prepare("INSERT INTO links ({$columns}) VALUES (" . implode(',', array_fill(0, count($values), '?')) . ")")
+                   ->execute($values);
+                $message = 'Link created successfully!';
+            } else {
+                $values = array_map(static fn(string $column) => $parsed[$column], LINK_MUTABLE_COLUMNS);
+                $set = implode(', ', array_map(static fn(string $column): string => "{$column} = ?", LINK_MUTABLE_COLUMNS));
+                $db->prepare("UPDATE links SET {$set}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")
+                   ->execute(array_merge($values, [$id, $userId]));
+                $message = 'Link updated successfully!';
+            }
+
             $messageType = 'success';
+        } catch (BadRequestException $e) {
+            http_response_code($e->getCode() >= 400 ? $e->getCode() : 400);
+            $message = $e->getMessage();
+            $messageType = 'error';
         }
     } elseif ($action === 'delete') {
         $id = (int)($_POST['id'] ?? 0);
@@ -199,7 +104,7 @@ $baseUrl = app_base_url();
 $primaryHost = (string)(explode(':', $_SERVER['HTTP_HOST'] ?? '')[0]);
 $debugToken = defined('DEBUG_TOKEN') ? DEBUG_TOKEN : '';
 
-$r = $editingLink ?: ['allow_empty_referer' => 1];
+$r = $editingLink ?: ['is_active' => 0, 'allow_empty_referer' => 0, 'block_review_infra' => 0];
 $boundCampaign = $editingLink && !empty($editingLink['campaign_id']);
 
 $activeNav = '/admin/links.php';
@@ -308,6 +213,7 @@ $activeNav = '/admin/links.php';
                                 <select id="redirect_type" name="redirect_type">
                                     <option value="302" <?= ($editingLink['redirect_type'] ?? '302') === '302' ? 'selected' : '' ?>>302 (Temporary)</option>
                                     <option value="301" <?= ($editingLink['redirect_type'] ?? '') === '301' ? 'selected' : '' ?>>301 (Permanent)</option>
+                                    <option value="303" <?= ($editingLink['redirect_type'] ?? '') === '303' ? 'selected' : '' ?>>303 (See Other)</option>
                                     <option value="meta" <?= ($editingLink['redirect_type'] ?? '') === 'meta' ? 'selected' : '' ?>>Meta Refresh</option>
                                 </select>
                             </div>
@@ -329,7 +235,7 @@ $activeNav = '/admin/links.php';
 
                     <?php if ($editingLink): ?>
                         <label class="checkbox" style="margin-top:1rem">
-                            <input type="checkbox" name="is_active" value="1" <?= $editingLink['is_active'] ? 'checked' : '' ?>> Active
+                            <input type="checkbox" name="is_active" value="1" <?= !empty($r['is_active']) ? 'checked' : '' ?>> Active
                         </label>
                     <?php endif; ?>
 

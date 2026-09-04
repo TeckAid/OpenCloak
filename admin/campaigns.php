@@ -22,109 +22,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
     if ($action === 'create' || $action === 'update') {
         $id = (int)($_POST['id'] ?? 0);
-        $name = trim($_POST['name'] ?? '');
-        $offerUrl = trim($_POST['offer_url'] ?? '');
-        $rejectMode = in_array($_POST['reject_mode'] ?? 'white', ['white', 'error'], true) ? $_POST['reject_mode'] : 'white';
-        $rejectCode = (int)($_POST['reject_code'] ?? 403);
-        $redirectType = in_array($_POST['redirect_type'] ?? '302', ['301', '302', 'meta'], true) ? $_POST['redirect_type'] : '302';
-        $redirectDelay = max(0, min(30, (int)($_POST['redirect_delay'] ?? 0)));
 
-        $flag = fn(string $k): int => isset($_POST[$k]) ? 1 : 0;
-        $txt = fn(string $k): string => trim($_POST[$k] ?? '');
+        try {
+            $existing = [];
+            if ($action === 'update') {
+                $existing = owned_row($db, 'campaigns', $id, $userId) ?: [];
+                if ($existing === []) {
+                    throw new BadRequestException('Campaign not found.', 404);
+                }
+            }
 
-        $params = [
-            $name, (int)($_POST['is_active'] ?? 1) ? 1 : 0, $offerUrl, $_POST['white_page'] ?? '',
-            $rejectMode, $rejectCode, $redirectType, $redirectDelay,
-            $flag('block_bots'), $flag('block_datacenters'), $flag('block_review_infra') ? 1 : (isset($_POST['block_review_infra']) ? 0 : 1), $flag('block_vpn'), $flag('block_tor'),
-            $flag('block_headless'), $flag('block_curl'),
-            $txt('allowed_countries'), $txt('blocked_countries'),
-            $txt('allowed_clients'), $txt('blocked_clients'),
-            $txt('allowed_devices'), $txt('blocked_devices'),
-            $txt('allowed_os'), $txt('blocked_os'), $txt('os_min_versions'),
-            $txt('allowed_languages'), $txt('blocked_languages'),
-            $txt('allowed_referrers'), $txt('blocked_referrers'), $flag('allow_empty_referer') ? 1 : (isset($_POST['allow_empty_referer']) ? 0 : 1),
-            $txt('required_url_params'),
-            $txt('allowed_resolutions'), $txt('blocked_resolutions'),
-            $flag('require_screen_info'), $flag('single_visit_only'),
-            $txt('offer_urls'),
-            in_array($txt('rotation_mode'), ['single', 'random', 'sequential'], true) ? $txt('rotation_mode') : 'single',
-            $txt('offer_routes'),
-            in_array($txt('offer_method'), ['redirect', 'iframe'], true) ? $txt('offer_method') : 'redirect',
-            $flag('forward_utms'),
-            $flag('no_cache'),
-            $flag('fast_mode'),
-            max(0, min(100000, (int)($_POST['delay_start'] ?? 0))),
-            $flag('delay_permanent'),
-            $txt('blocked_url_params'),
-            $txt('required_url_keywords'),
-            $flag('allow_geo_override'),
-        ];
+            $parsed = parse_campaign_input($_POST, $existing, ['source' => 'form']);
+            $values = array_map(static fn(string $column) => $parsed[$column], CAMPAIGN_MUTABLE_COLUMNS);
 
-        if ($action === 'create') {
-            $db->prepare("
-                INSERT INTO campaigns (user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay,
-                    block_bots, block_datacenters, block_review_infra, block_vpn, block_tor, block_headless, block_curl,
-                    allowed_countries, blocked_countries, allowed_clients, blocked_clients,
-                    allowed_devices, blocked_devices, allowed_os, blocked_os, os_min_versions,
-                    allowed_languages, blocked_languages, allowed_referrers, blocked_referrers, allow_empty_referer,
-                    required_url_params, blocked_url_params, required_url_keywords,
-                    allowed_resolutions, blocked_resolutions, require_screen_info, single_visit_only,
-                    offer_urls, rotation_mode, offer_routes,
-                    offer_method, forward_utms, no_cache, fast_mode, delay_start, delay_permanent, allow_geo_override)
-                VALUES (?, " . rtrim(str_repeat('?, ', count($params)), ', ') . ")
-            ")->execute(array_merge([$userId], $params));
-            $message = 'Campaign created successfully!';
+            if ($action === 'create') {
+                $columns = implode(',', CAMPAIGN_MUTABLE_COLUMNS);
+                $placeholders = implode(',', array_fill(0, count(CAMPAIGN_MUTABLE_COLUMNS) + 1, '?'));
+                $db->prepare("INSERT INTO campaigns (user_id, {$columns}) VALUES ({$placeholders})")
+                   ->execute(array_merge([$userId], $values));
+                $message = 'Campaign created successfully!';
+            } else {
+                $set = implode(', ', array_map(static fn(string $column): string => "{$column} = ?", CAMPAIGN_MUTABLE_COLUMNS));
+                $db->prepare("UPDATE campaigns SET {$set}, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")
+                   ->execute(array_merge($values, [$id, $userId]));
+                $message = 'Campaign updated successfully!';
+            }
+
             $messageType = 'success';
-        } else {
-            $db->prepare("
-                UPDATE campaigns SET
-                    name = ?, is_active = ?, offer_url = ?, white_page = ?, reject_mode = ?, reject_code = ?,
-                    redirect_type = ?, redirect_delay = ?,
-                    block_bots = ?, block_datacenters = ?, block_review_infra = ?, block_vpn = ?, block_tor = ?, block_headless = ?, block_curl = ?,
-                    allowed_countries = ?, blocked_countries = ?, allowed_clients = ?, blocked_clients = ?,
-                    allowed_devices = ?, blocked_devices = ?, allowed_os = ?, blocked_os = ?, os_min_versions = ?,
-                    allowed_languages = ?, blocked_languages = ?, allowed_referrers = ?, blocked_referrers = ?, allow_empty_referer = ?,
-                    required_url_params = ?, blocked_url_params = ?, required_url_keywords = ?,
-                    allowed_resolutions = ?, blocked_resolutions = ?,
-                    require_screen_info = ?, single_visit_only = ?,
-                    offer_urls = ?, rotation_mode = ?, offer_routes = ?,
-                    offer_method = ?, forward_utms = ?, no_cache = ?, fast_mode = ?, delay_start = ?, delay_permanent = ?, allow_geo_override = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE id = ? AND user_id = ?
-            ")->execute(array_merge($params, [$id, $userId]));
-            $message = 'Campaign updated successfully!';
-            $messageType = 'success';
+        } catch (BadRequestException $e) {
+            http_response_code($e->getCode() >= 400 ? $e->getCode() : 400);
+            $message = $e->getMessage();
+            $messageType = 'error';
         }
     } elseif ($action === 'delete') {
         $id = (int)($_POST['id'] ?? 0);
-        $db->prepare("UPDATE links SET campaign_id = NULL WHERE campaign_id = ? AND user_id = ?")->execute([$id, $userId]);
-        $db->prepare("DELETE FROM campaigns WHERE id = ? AND user_id = ?")->execute([$id, $userId]);
-        $message = 'Campaign deleted.';
-        $messageType = 'success';
+        $campaign = owned_row($db, 'campaigns', $id, $userId);
+        if ($campaign === null) {
+            $message = 'Campaign not found.';
+            $messageType = 'error';
+        } else {
+            $error = delete_campaign_safely($db, $userId, $id);
+            if ($error !== null) {
+                $message = $error;
+                $messageType = 'error';
+            } else {
+                $message = 'Campaign deleted.';
+                $messageType = 'success';
+            }
+        }
     } elseif ($action === 'clone') {
         $id = (int)($_POST['id'] ?? 0);
         $stmt = $db->prepare("SELECT * FROM campaigns WHERE id = ? AND user_id = ?");
         $stmt->execute([$id, $userId]);
         $src = $stmt->fetch();
         if ($src) {
-            $cols = array_merge(
-                ['name', 'is_active', 'offer_url', 'white_page', 'reject_mode', 'reject_code', 'redirect_type', 'redirect_delay'],
-                array_keys(array_filter($src, fn($k) => in_array($k, [
-                    'block_bots', 'block_datacenters', 'block_review_infra', 'block_vpn', 'block_tor', 'block_headless', 'block_curl',
-                    'allowed_countries', 'blocked_countries', 'allowed_clients', 'blocked_clients',
-                    'allowed_devices', 'blocked_devices', 'allowed_os', 'blocked_os', 'os_min_versions',
-                    'allowed_languages', 'blocked_languages', 'allowed_referrers', 'blocked_referrers', 'allow_empty_referer',
-                    'required_url_params', 'blocked_url_params', 'required_url_keywords',
-                    'allowed_resolutions', 'blocked_resolutions', 'require_screen_info', 'single_visit_only',
-                    'offer_urls', 'rotation_mode', 'offer_routes',
-                    'offer_method', 'forward_utms', 'no_cache', 'fast_mode', 'delay_start', 'delay_permanent', 'allow_geo_override',
-                ], true), ARRAY_FILTER_USE_KEY))
-            );
             $params = [];
-            foreach ($cols as $col) {
+            foreach (CAMPAIGN_MUTABLE_COLUMNS as $col) {
                 $params[] = $col === 'name' ? $src['name'] . ' (copy)' : $src[$col];
             }
-            $db->prepare("INSERT INTO campaigns (user_id, " . implode(',', $cols) . ") VALUES (?, " . rtrim(str_repeat('?, ', count($cols)), ', ') . ")")
+            $db->prepare("INSERT INTO campaigns (user_id, " . implode(',', CAMPAIGN_MUTABLE_COLUMNS) . ") VALUES (?, " . rtrim(str_repeat('?, ', count(CAMPAIGN_MUTABLE_COLUMNS)), ', ') . ")")
                ->execute(array_merge([$userId], $params));
             $message = 'Campaign cloned!';
             $messageType = 'success';
@@ -140,7 +96,7 @@ if (isset($_GET['edit'])) {
     $editing = $stmt->fetch() ?: null;
 }
 
-$r = $editing ?: ['allow_empty_referer' => 1];
+$r = $editing ?: ['is_active' => 0, 'allow_empty_referer' => 0, 'block_review_infra' => 0];
 
 // ---- List --------------------------------------------------------------------------
 $stmt = $db->prepare("SELECT * FROM campaigns WHERE user_id = ? ORDER BY created_at DESC");
@@ -246,6 +202,7 @@ foreach ($stmt->fetchAll() as $row) {
                             <select name="redirect_type">
                                 <option value="302" <?= ($r['redirect_type'] ?? '302') === '302' ? 'selected' : '' ?>>302 (Temporary)</option>
                                 <option value="301" <?= ($r['redirect_type'] ?? '') === '301' ? 'selected' : '' ?>>301 (Permanent)</option>
+                                <option value="303" <?= ($r['redirect_type'] ?? '') === '303' ? 'selected' : '' ?>>303 (See Other)</option>
                                 <option value="meta" <?= ($r['redirect_type'] ?? '') === 'meta' ? 'selected' : '' ?>>Meta Refresh</option>
                             </select>
                         </div>
@@ -263,7 +220,7 @@ foreach ($stmt->fetchAll() as $row) {
 
                     <?php if ($editing): ?>
                         <label class="checkbox" style="margin-top:1rem">
-                            <input type="checkbox" name="is_active" value="1" <?= $editing['is_active'] ? 'checked' : '' ?>> Active
+                            <input type="checkbox" name="is_active" value="1" <?= !empty($r['is_active']) ? 'checked' : '' ?>> Active
                         </label>
                     <?php endif; ?>
 
