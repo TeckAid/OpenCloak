@@ -27,7 +27,7 @@ function current_user(): ?array
 
 /**
  * Redirect to login if not authenticated, and to settings.php when a
- * password change is still required (first login with default credentials).
+ * password change is still required for an existing account.
  */
 function require_login(): void
 {
@@ -51,6 +51,8 @@ function require_valid_post(): void
 {
     if (($_SERVER['REQUEST_METHOD'] ?? 'GET') === 'POST' && !csrf_verify()) {
         http_response_code(403);
+        header('Cache-Control: no-store');
+        header('Content-Type: text/html; charset=UTF-8');
         echo '<!DOCTYPE html><html><body style="font-family:sans-serif;text-align:center;padding:4rem">'
            . '<h1>403</h1><p>Invalid or expired security token. Please go back and try again.</p></body></html>';
         exit;

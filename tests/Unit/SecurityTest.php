@@ -4,6 +4,19 @@ require_once __DIR__ . '/../bootstrap.php';
 
 final class SecurityTest extends TestCase
 {
+    public function test_rate_limit_allows_only_one_parallel_attempt_for_single_key(): void
+    {
+        $allowedCounts = $this->runParallelRateLimitProbe(4, 8, 1);
+
+        foreach ($allowedCounts as $index => $allowedCount) {
+            $this->assertSame(
+                1,
+                $allowedCount,
+                sprintf('Round %d admitted %d parallel attempts for a single key', $index + 1, $allowedCount)
+            );
+        }
+    }
+
     public function test_app_base_url_uses_explicit_configuration(): void
     {
         $value = $this->runSecurityProbe(<<<'PHP'
@@ -136,5 +149,119 @@ PHP;
         }
 
         return $path;
+    }
+
+    /**
+     * @return list<int>
+     */
+    private function runParallelRateLimitProbe(int $rounds, int $workers, int $max): array
+    {
+        $runtimeDir = $this->tempDir('cloaking-rate-limit-');
+        $initScript = $runtimeDir . DIRECTORY_SEPARATOR . 'init.php';
+        $workerScript = $runtimeDir . DIRECTORY_SEPARATOR . 'worker.php';
+
+        file_put_contents($initScript, sprintf(
+            <<<'PHP'
+<?php
+define('DB_PATH', $argv[1]);
+require_once %s;
+initDatabase();
+PHP,
+            var_export(APP_ROOT . '/includes/database.php', true)
+        ));
+
+        file_put_contents($workerScript, sprintf(
+            <<<'PHP'
+<?php
+define('DB_PATH', $argv[1]);
+require_once %s;
+require_once %s;
+
+$target = (float) $argv[2];
+$key = (string) $argv[3];
+$max = (int) $argv[4];
+
+while (microtime(true) < $target) {
+}
+
+echo rate_limit($key, $max, 60) ? "1\n" : "0\n";
+PHP,
+            var_export(APP_ROOT . '/includes/database.php', true),
+            var_export(APP_ROOT . '/includes/security.php', true)
+        ));
+
+        $results = [];
+        for ($round = 0; $round < $rounds; $round++) {
+            $dbPath = $runtimeDir . DIRECTORY_SEPARATOR . 'round-' . $round . '.sqlite';
+            $this->runPhpCommand([PHP_BINARY, $initScript, $dbPath], 'Failed to initialize rate-limit fixture database');
+
+            $target = microtime(true) + 0.8;
+            $processes = [];
+            $stdoutFiles = [];
+            for ($worker = 0; $worker < $workers; $worker++) {
+                $stdoutFiles[$worker] = $runtimeDir . DIRECTORY_SEPARATOR . sprintf('round-%d-worker-%d.out', $round, $worker);
+                $stderrFile = $runtimeDir . DIRECTORY_SEPARATOR . sprintf('round-%d-worker-%d.err', $round, $worker);
+                $command = [
+                    PHP_BINARY,
+                    $workerScript,
+                    $dbPath,
+                    (string) $target,
+                    'parallel-limit-key',
+                    (string) $max,
+                ];
+                $descriptorSpec = [
+                    0 => ['pipe', 'r'],
+                    1 => ['file', $stdoutFiles[$worker], 'w'],
+                    2 => ['file', $stderrFile, 'w'],
+                ];
+                $processes[$worker] = proc_open($command, $descriptorSpec, $pipes, APP_ROOT);
+                if (!is_resource($processes[$worker])) {
+                    throw new RuntimeException('Unable to spawn parallel rate-limit probe worker');
+                }
+                if (isset($pipes[0]) && is_resource($pipes[0])) {
+                    fclose($pipes[0]);
+                }
+            }
+
+            foreach ($processes as $process) {
+                proc_close($process);
+            }
+
+            $allowedCount = 0;
+            foreach ($stdoutFiles as $stdoutFile) {
+                $allowedCount += (int) trim((string) file_get_contents($stdoutFile));
+            }
+            $results[] = $allowedCount;
+        }
+
+        return $results;
+    }
+
+    /**
+     * @param list<string> $command
+     */
+    private function runPhpCommand(array $command, string $errorPrefix): void
+    {
+        $descriptorSpec = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+
+        $process = proc_open($command, $descriptorSpec, $pipes, APP_ROOT);
+        if (!is_resource($process)) {
+            throw new RuntimeException($errorPrefix . ': unable to start process');
+        }
+
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        if ($exitCode !== 0) {
+            throw new RuntimeException($errorPrefix . ': ' . trim($stdout . "\n" . $stderr));
+        }
     }
 }

@@ -19,37 +19,51 @@ boot_app(false);
 
 $options = getopt('', ['username::', 'password::', 'generate-password']);
 $username = trim((string)($options['username'] ?? 'admin'));
-$password = (string)($options['password'] ?? '');
-
-if (isset($options['generate-password']) || $password === '') {
-    $password = bin2hex(random_bytes(9)); // 18 hex chars
-    echo "Generated password: {$password}\n";
-}
-
-if (strlen($password) < 10) {
-    fwrite(STDERR, "Error: password must be at least 10 characters.\n");
-    exit(1);
-}
 if (!preg_match('/^[a-zA-Z0-9_.-]{1,64}$/', $username)) {
     fwrite(STDERR, "Error: username may only contain letters, numbers, dot, dash, underscore.\n");
     exit(1);
 }
 
 $db = getDB();
-$stmt = $db->prepare("SELECT id FROM users WHERE username = ?");
-$stmt->execute([$username]);
+$db->exec('BEGIN IMMEDIATE');
 
-if ($stmt->fetch()) {
-    $hashed = password_hash($password, PASSWORD_DEFAULT);
-    $db->prepare("UPDATE users SET password = ?, must_change_password = 0, updated_at = CURRENT_TIMESTAMP WHERE username = ?")
-       ->execute([$hashed, $username]);
-    echo "Updated password for existing user '{$username}'.\n";
-} else {
+try {
+    $existingUsers = (int) $db->query('SELECT COUNT(*) FROM users')->fetchColumn();
+    if ($existingUsers > 0) {
+        $db->rollBack();
+        fwrite(STDERR, "Error: installer has already created the first administrator.\n");
+        exit(1);
+    }
+
+    $password = (string) ($options['password'] ?? '');
+    $generated = false;
+    if (isset($options['generate-password']) || $password === '') {
+        $password = bin2hex(random_bytes(9));
+        $generated = true;
+    }
+
+    if (strlen($password) < 10) {
+        $db->rollBack();
+        fwrite(STDERR, "Error: password must be at least 10 characters.\n");
+        exit(1);
+    }
+
     $hashed = password_hash($password, PASSWORD_DEFAULT);
     $apiKey = bin2hex(random_bytes(32));
     $db->prepare("INSERT INTO users (username, password, api_key, must_change_password) VALUES (?, ?, ?, 0)")
        ->execute([$username, $hashed, $apiKey]);
+    $db->commit();
+
+    if ($generated) {
+        echo "Generated password: {$password}\n";
+    }
+
     echo "Created user '{$username}'.\n";
+} catch (Throwable $e) {
+    if ($db->inTransaction()) {
+        $db->rollBack();
+    }
+    throw $e;
 }
 
 echo "\nSetup complete.\n";

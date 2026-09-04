@@ -17,6 +17,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_valid_post();
     if (($_POST['action'] ?? '') === 'logout') {
         $_SESSION = [];
+        $cookieParams = session_get_cookie_params();
+        setcookie(session_name(), '', [
+            'expires' => time() - 3600,
+            'path' => $cookieParams['path'] ?? '/',
+            'domain' => $cookieParams['domain'] ?? '',
+            'secure' => (bool) ($cookieParams['secure'] ?? false),
+            'httponly' => (bool) ($cookieParams['httponly'] ?? true),
+            'samesite' => $cookieParams['samesite'] ?? 'Lax',
+        ]);
         session_destroy();
         header('Location: /admin/login.php');
         exit;

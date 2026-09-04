@@ -19,34 +19,41 @@ $rateLimited = false;
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     require_valid_post();
 
-    $ip = app_client_ip();
-    $allowed = !defined('RATE_LIMIT_ENABLED') || !RATE_LIMIT_ENABLED
-        || rate_limit('login:' . $ip, (int)LOGIN_MAX_ATTEMPTS, (int)LOGIN_WINDOW_SECONDS);
+    $username = trim((string) ($_POST['username'] ?? ''));
+    $password = (string) ($_POST['password'] ?? '');
+
+    $allowed = true;
+    if (defined('RATE_LIMIT_ENABLED') && RATE_LIMIT_ENABLED) {
+        $allowed = rate_limit('login:ip:' . app_client_ip(), (int) LOGIN_MAX_ATTEMPTS, (int) LOGIN_WINDOW_SECONDS);
+        if ($allowed && $username !== '') {
+            $allowed = rate_limit(
+                'login:account:' . hash('sha256', strtolower($username)),
+                (int) LOGIN_MAX_ATTEMPTS,
+                (int) LOGIN_WINDOW_SECONDS
+            );
+        }
+    }
 
     if (!$allowed) {
         $rateLimited = true;
+    } elseif ($username === '' || $password === '') {
+        $error = 'Please enter both username and password.';
     } else {
-        $username = trim($_POST['username'] ?? '');
-        $password = $_POST['password'] ?? '';
+        $stmt = getDB()->prepare("SELECT * FROM users WHERE username = ?");
+        $stmt->execute([$username]);
+        $user = $stmt->fetch();
 
-        if ($username === '' || $password === '') {
-            $error = 'Please enter both username and password.';
-        } else {
-            $stmt = getDB()->prepare("SELECT * FROM users WHERE username = ?");
-            $stmt->execute([$username]);
-            $user = $stmt->fetch();
-
-            if ($user && password_verify($password, $user['password'])) {
-                session_regenerate_id(true);
-                $_SESSION['user_id'] = (int)$user['id'];
-                $_SESSION['username'] = $user['username'];
-                $_SESSION['needs_password_change'] = !empty($user['must_change_password']);
-                unset($_SESSION['csrf_token']); // rotate on privilege change
-                header('Location: /admin/dashboard.php');
-                exit;
-            }
-            $error = 'Invalid username or password.';
+        if ($user && password_verify($password, $user['password'])) {
+            session_regenerate_id(true);
+            $_SESSION['user_id'] = (int)$user['id'];
+            $_SESSION['username'] = $user['username'];
+            $_SESSION['needs_password_change'] = !empty($user['must_change_password']);
+            unset($_SESSION['csrf_token']); // rotate on privilege change
+            header('Location: /admin/dashboard.php');
+            exit;
         }
+
+        $error = 'Invalid username or password.';
     }
 }
 ?>

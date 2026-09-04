@@ -229,16 +229,6 @@ function initDatabase(): PDO
     $db->exec("CREATE INDEX IF NOT EXISTS idx_campaigns_user ON campaigns(user_id)");
     $db->exec("CREATE INDEX IF NOT EXISTS idx_delay_ips ON delay_ips(campaign_id, link_id, ip_hash)");
 
-    // ---- Default admin user (first run only) -------------------------------------
-    $stmt = $db->query("SELECT COUNT(*) as cnt FROM users");
-    $row = $stmt->fetch();
-    if ((int)$row['cnt'] === 0) {
-        $defaultPass = password_hash('admin', PASSWORD_DEFAULT);
-        $apiKey = bin2hex(random_bytes(32));
-        $db->prepare("INSERT INTO users (username, password, api_key, must_change_password) VALUES (?, ?, ?, 1)")
-           ->execute(['admin', $defaultPass, $apiKey]);
-    }
-
     return $db;
 }
 

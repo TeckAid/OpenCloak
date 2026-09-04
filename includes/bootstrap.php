@@ -56,9 +56,13 @@ function boot_app(bool $withSession = true): void
     header('Referrer-Policy: strict-origin-when-cross-origin');
 
     $isAdminPath = strpos($_SERVER['REQUEST_URI'] ?? '', '/admin') === 0;
+    $isApiPath = strpos($_SERVER['REQUEST_URI'] ?? '', '/api') === 0;
     if ($isAdminPath) {
         header("Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline'; "
              . "style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'self'");
+    }
+    if ($isAdminPath || $isApiPath) {
+        header('Cache-Control: no-store');
     }
 
     require_once __DIR__ . '/database.php';
@@ -83,8 +87,17 @@ function boot_app(bool $withSession = true): void
         // Enforce lifetime on the server side as well
         $now = time();
         if (isset($_SESSION['last_activity']) && ($now - $_SESSION['last_activity'] > SESSION_LIFETIME)) {
+            $cookieParams = session_get_cookie_params();
             session_unset();
             session_destroy();
+            setcookie(session_name(), '', [
+                'expires' => $now - 3600,
+                'path' => $cookieParams['path'] ?? '/',
+                'domain' => $cookieParams['domain'] ?? '',
+                'secure' => (bool) ($cookieParams['secure'] ?? false),
+                'httponly' => (bool) ($cookieParams['httponly'] ?? true),
+                'samesite' => $cookieParams['samesite'] ?? 'Lax',
+            ]);
             session_start();
         }
         $_SESSION['last_activity'] = $now;

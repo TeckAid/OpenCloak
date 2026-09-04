@@ -81,7 +81,7 @@ $activeNav = '/admin/settings.php';
 
     <div class="container">
         <?php if ($forceChange): ?>
-            <div class="alert alert-warning">You are using default credentials. Change your password before continuing.</div>
+            <div class="alert alert-warning">You must change your password before continuing.</div>
         <?php endif; ?>
 
         <?php if ($message): ?>

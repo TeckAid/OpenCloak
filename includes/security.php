@@ -334,25 +334,43 @@ function rate_limit(string $key, int $max, int $windowSeconds): bool
 {
     $db = getDB();
     $now = time();
+    $resetAt = $now + $windowSeconds;
 
-    $stmt = $db->prepare("SELECT count, reset_at FROM rate_limits WHERE rkey = ?");
-    $stmt->execute([$key]);
-    $row = $stmt->fetch();
+    $db->exec('BEGIN IMMEDIATE');
 
-    if (!$row || (int) $row['reset_at'] < $now) {
+    try {
+        $stmt = $db->prepare('SELECT count, reset_at FROM rate_limits WHERE rkey = ?');
+        $stmt->execute([$key]);
+        $row = $stmt->fetch();
+
+        if (!$row || (int) $row['reset_at'] < $now) {
+            $count = 1;
+            $currentResetAt = $resetAt;
+            $allowed = true;
+        } elseif ((int) $row['count'] >= $max) {
+            $count = (int) $row['count'];
+            $currentResetAt = (int) $row['reset_at'];
+            $allowed = false;
+        } else {
+            $count = (int) $row['count'] + 1;
+            $currentResetAt = (int) $row['reset_at'];
+            $allowed = true;
+        }
+
         $db->prepare(
-            "INSERT INTO rate_limits (rkey, count, reset_at) VALUES (?, 1, ?)
-             ON CONFLICT(rkey) DO UPDATE SET count = 1, reset_at = excluded.reset_at"
-        )->execute([$key, $now + $windowSeconds]);
-        return true;
-    }
+            'INSERT INTO rate_limits (rkey, count, reset_at) VALUES (?, ?, ?)
+             ON CONFLICT(rkey) DO UPDATE SET count = excluded.count, reset_at = excluded.reset_at'
+        )->execute([$key, $count, $currentResetAt]);
 
-    if ((int) $row['count'] >= $max) {
-        return false;
-    }
+        $db->commit();
 
-    $db->prepare("UPDATE rate_limits SET count = count + 1 WHERE rkey = ?")->execute([$key]);
-    return true;
+        return $allowed;
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
 }
 
 // ---- Input validation ---------------------------------------------------------
