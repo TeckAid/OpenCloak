@@ -16,14 +16,23 @@ backup_dir="${work_dir}/backup"
 evidence_dir="${work_dir}/evidence"
 config_path="${work_dir}/config.local.php"
 project="cloaking-lifecycle-${RANDOM}${RANDOM}"
+image_id=""
 mkdir -p "${runtime_dir}" "${backup_dir}"
 
 cleanup() {
+    local cleanup_image="${image_id}"
     (
         cd "${repo_dir}"
         CLOAKING_RUNTIME_PATH="${runtime_dir}" CLOAKING_CONFIG_PATH="${config_path}" \
             docker compose -p "${project}" down -v >/dev/null 2>&1 || true
     )
+    if [[ -n "${cleanup_image}" ]] && docker image inspect "${cleanup_image}" >/dev/null 2>&1; then
+        docker run --rm --entrypoint chown \
+            -v "${work_dir}:/cleanup" \
+            "${cleanup_image}" \
+            --reference=/cleanup -R /cleanup >/dev/null 2>&1 || true
+    fi
+    chmod -R u+rwX "${work_dir}" >/dev/null 2>&1 || true
     rm -rf "${work_dir}"
 }
 trap cleanup EXIT
@@ -89,7 +98,67 @@ docker run --rm --entrypoint bash \
             echo (int) initDatabase()->query("SELECT COUNT(*) FROM links WHERE slug = \"lifecycle\"")->fetchColumn();
         ')"
     [[ "${count}" == "1" ]] || { echo "Lifecycle data did not survive Compose restart." >&2; exit 1; }
+
+    CLOAKING_RUNTIME_PATH="${runtime_dir}" CLOAKING_CONFIG_PATH="${config_path}" \
+        docker compose -p "${project}" exec -T web php -r '
+            require "/var/www/html/config.php";
+            require "/var/www/html/includes/database.php";
+            initDatabase()->prepare("DELETE FROM links WHERE slug = ?")->execute(["lifecycle"]);
+        '
+    count="$(CLOAKING_RUNTIME_PATH="${runtime_dir}" CLOAKING_CONFIG_PATH="${config_path}" \
+        docker compose -p "${project}" exec -T web php -r '
+            require "/var/www/html/config.php";
+            require "/var/www/html/includes/database.php";
+            echo (int) initDatabase()->query("SELECT COUNT(*) FROM links WHERE slug = \"lifecycle\"")->fetchColumn();
+        ')"
+    [[ "${count}" == "0" ]] || { echo "Lifecycle restore precondition did not remove the seeded record." >&2; exit 1; }
+    CLOAKING_RUNTIME_PATH="${runtime_dir}" CLOAKING_CONFIG_PATH="${config_path}" \
+        docker compose -p "${project}" stop web
 )
+
+docker run --rm --entrypoint bash \
+    -v "${runtime_dir}:/srv/cloaking/runtime" \
+    -v "${backup_dir}:/backup:ro" \
+    "${image_id}" \
+    -euo pipefail -c '
+        rm -f \
+            /srv/cloaking/runtime/cloaking.sqlite \
+            /srv/cloaking/runtime/cloaking.sqlite-wal \
+            /srv/cloaking/runtime/cloaking.sqlite-shm \
+            /srv/cloaking/runtime/app.key
+        install -o 33 -g 33 -m 0600 /backup/cloaking.sqlite /srv/cloaking/runtime/cloaking.sqlite
+        install -o 33 -g 33 -m 0600 /backup/app.key /srv/cloaking/runtime/app.key
+    '
+
+(
+    cd "${repo_dir}"
+    CLOAKING_RUNTIME_PATH="${runtime_dir}" CLOAKING_CONFIG_PATH="${config_path}" \
+        docker compose -p "${project}" start web
+    ready=0
+    for _ in $(seq 1 30); do
+        if CLOAKING_RUNTIME_PATH="${runtime_dir}" CLOAKING_CONFIG_PATH="${config_path}" \
+            docker compose -p "${project}" exec -T web curl -fsS http://127.0.0.1/healthz >/dev/null 2>&1; then
+            ready=1
+            break
+        fi
+        sleep 1
+    done
+    [[ "${ready}" == "1" ]] || { echo "Compose web service did not become healthy after restore." >&2; exit 1; }
+    count="$(CLOAKING_RUNTIME_PATH="${runtime_dir}" CLOAKING_CONFIG_PATH="${config_path}" \
+        docker compose -p "${project}" exec -T web php -r '
+            require "/var/www/html/config.php";
+            require "/var/www/html/includes/database.php";
+            echo (int) initDatabase()->query("SELECT COUNT(*) FROM links WHERE slug = \"lifecycle\"")->fetchColumn();
+        ')"
+    [[ "${count}" == "1" ]] || { echo "Lifecycle data was not recovered into the canonical Compose runtime." >&2; exit 1; }
+)
+
+# The backup container runs as root so it can read the service-owned runtime.
+# Return its private output to the invoking user before the host-side rehearsal.
+docker run --rm --entrypoint chown \
+    -v "${backup_dir}:/backup" \
+    "${image_id}" \
+    --reference=/backup -R /backup
 
 printf '%s\n' 'LifecycleStrong123!' | bash "${repo_dir}/ops/restore_rehearsal.sh" \
     --app-root="${repo_dir}" \
