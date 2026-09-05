@@ -24,7 +24,7 @@ final class RecoveryTest extends TestCase
             $this->assertSame('https://app.example.test', $metadata['config']['app_base_url'] ?? null);
             $this->assertSame(['127.0.0.1', 'app.example.test'], $metadata['config']['system_hosts'] ?? null);
             $this->assertSame(['172.23.0.2/32'], $metadata['config']['trusted_proxies'] ?? null);
-            $this->assertSame(3, $metadata['migration_target'] ?? null);
+            $this->assertSame(get_expected_schema_version(), $metadata['migration_target'] ?? null);
             $this->assertSame($this->currentSourceCommit(), $metadata['provenance']['source_commit'] ?? null);
             $this->assertSame('sha256:' . str_repeat('b', 64), $metadata['provenance']['image_digest'] ?? null);
             $this->assertTrue(preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', (string) ($metadata['created_at_utc'] ?? '')) === 1);
@@ -246,7 +246,7 @@ PHP,
             $this->assertSame(0, $restore['exit'], $restore['stderr'] . $restore['stdout']);
             $this->assertTrue(str_contains(
                 (string) file_get_contents($evidenceDir . '/migration.stdout.log'),
-                'Applied schema version 3 (1,2,3).'
+                sprintf('Applied schema version %d (%s).', get_expected_schema_version(), implode(',', range(1, get_expected_schema_version())))
             ));
             $smoke = $this->readJsonFile($evidenceDir . '/smoke-results.json');
             $this->assertSame(302, $smoke['login']['status'] ?? null);
@@ -378,7 +378,7 @@ PHP;
             '--db=' . $fixture['dbPath'],
             '--app-key=' . $fixture['appKeyPath'],
             '--output=' . $backupDir,
-            '--migration-target=3',
+            '--migration-target=' . get_expected_schema_version(),
             '--source-commit=' . $this->currentSourceCommit(),
             '--image-digest=sha256:' . str_repeat('b', 64),
         ];

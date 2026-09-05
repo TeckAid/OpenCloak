@@ -225,6 +225,22 @@ class BotDetector
             $reasons[] = $reason;
         };
 
+        // IP allowlist: matched IPs always pass, overriding every other rule
+        // (used by operators to preview the offer from their own devices).
+        if (!empty($rules['ip_allowlist'])) {
+            foreach (preg_split('/[,\s]+/', (string) $rules['ip_allowlist']) ?: [] as $entry) {
+                if ($entry !== '' && app_ip_matches_cidr($this->ip, $entry)) {
+                    return ['allowed' => true, 'reasons' => []];
+                }
+            }
+        }
+
+        // IPv6 blocking: ad-platform reviewers often probe over IPv6
+        if (!empty($rules['block_ipv6'])
+            && filter_var($this->ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
+            $deny('ipv6_blocked');
+        }
+
         // Bot / network
         if (!empty($rules['block_bots']) && $result['is_bot'])             $deny('bot_detected');
         if (!empty($rules['block_datacenters']) && $result['is_datacenter']) $deny('datacenter_ip');

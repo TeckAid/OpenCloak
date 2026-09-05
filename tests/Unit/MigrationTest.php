@@ -16,13 +16,13 @@ final class MigrationTest extends TestCase
             $db = $this->openDatabase($dbPath);
             $versions = $db->query('SELECT version FROM schema_migrations ORDER BY version')->fetchAll(PDO::FETCH_COLUMN);
 
-            $this->assertSame([1, 2, 3], array_map('intval', $versions));
-            $this->assertSame(3, (int) get_expected_schema_version());
+            $this->assertSame(range(1, get_expected_schema_version()), array_map('intval', $versions));
+            $this->assertSame(get_expected_schema_version(), (int) get_expected_schema_version());
             $this->assertSame(1, (int) $db->query("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'client_credentials'")->fetchColumn());
 
             $second = $this->runMigrationCommand($dbPath);
             $this->assertSame(0, $second['exit']);
-            $this->assertSame(3, (int) $db->query('SELECT COUNT(*) FROM schema_migrations')->fetchColumn());
+            $this->assertSame(get_expected_schema_version(), (int) $db->query('SELECT COUNT(*) FROM schema_migrations')->fetchColumn());
         } finally {
             $this->deleteTree($runtime);
         }
@@ -113,7 +113,7 @@ PHP,
             $this->assertSame('', $stderr);
 
             $db = $this->openDatabase($dbPath);
-            $this->assertSame(3, (int) $db->query('SELECT COUNT(*) FROM schema_migrations')->fetchColumn());
+            $this->assertSame(get_expected_schema_version(), (int) $db->query('SELECT COUNT(*) FROM schema_migrations')->fetchColumn());
         } finally {
             $this->deleteTree($runtime);
         }
@@ -177,7 +177,7 @@ PHP,
         try {
             $this->createLegacyVersionOneDatabase($dbPath);
 
-            $backup = $this->createMigrationBackup($runtime, $dbPath, 3);
+            $backup = $this->createMigrationBackup($runtime, $dbPath, get_expected_schema_version());
             $result = $this->runMigrationCommand($dbPath, [
                 '--backup-manifest=' . $backup['manifestPath'],
                 '--app-key=' . $backup['appKeyPath'],
@@ -191,7 +191,7 @@ PHP,
             $credential = $db->query('SELECT * FROM client_credentials WHERE id = 13')->fetch();
             $campaignForeignKey = $this->findForeignKey($db, 'client_credentials', ['campaign_id', 'user_id']);
 
-            $this->assertSame([1, 2, 3], $versions);
+            $this->assertSame(range(1, get_expected_schema_version()), $versions);
             $this->assertSame('promo', (string) $link['slug']);
             $this->assertSame(7, (int) $link['campaign_id']);
             $this->assertSame(8, (int) $link['domain_id']);
@@ -422,7 +422,7 @@ PHP,
             $this->assertSame(1, $missing['exit']);
             $this->assertTrue(str_contains($missing['stderr'] . $missing['stdout'], 'verified backup manifest'));
 
-            $backup = $this->createMigrationBackup($runtime, $dbPath, 3);
+            $backup = $this->createMigrationBackup($runtime, $dbPath, get_expected_schema_version());
             $valid = $this->runMigrationCommand($dbPath, [
                 '--backup-manifest=' . $backup['manifestPath'],
                 '--app-key=' . $backup['appKeyPath'],
@@ -444,7 +444,7 @@ PHP,
                 mkdir($runtime, 0700, true);
                 $dbPath = $runtime . DIRECTORY_SEPARATOR . 'cloaking.sqlite';
                 $this->createLegacyVersionOneDatabase($dbPath);
-                $backup = $this->createMigrationBackup($runtime, $dbPath, $case === 'target' ? 2 : 3);
+                $backup = $this->createMigrationBackup($runtime, $dbPath, $case === 'target' ? 2 : get_expected_schema_version());
 
                 $args = [
                     '--backup-manifest=' . $backup['manifestPath'],

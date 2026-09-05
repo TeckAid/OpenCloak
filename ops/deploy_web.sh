@@ -177,14 +177,15 @@ bash "${SCRIPT_DIR}/backup_sqlite.sh" \
   --config="${config_path}" \
   --db="${db_path}" \
   --app-key="${app_key_path}" \
-  --migration-target=3 \
+  --migration-target="$(php -r 'require "${repo_dir}/includes/database.php"; echo get_expected_schema_version();')" \
   --source-commit="${SOURCE_COMMIT}" \
   --image-digest="${IMAGE_DIGEST}"
 [[ -f "${BACKUP_PATH}/backup-metadata.json" ]] \
   || { echo "Error: backup finished without a manifest." >&2; exit 1; }
 
 # ---- Gate 4: migration -----------------------------------------------------------
-say "migration -> schema 3"
+MIGRATION_TARGET="$(php -r 'require "${repo_dir}/includes/database.php"; echo get_expected_schema_version();')"
+say "migration -> schema ${MIGRATION_TARGET}"
 php bin/migrate.php \
   --db="${db_path}" \
   --backup-manifest="${BACKUP_PATH}/backup-metadata.json" \
@@ -242,6 +243,6 @@ say "DEPLOY COMPLETE"
 say "commit=${SOURCE_COMMIT}"
 say "image-digest=${IMAGE_DIGEST}"
 say "backup=${BACKUP_PATH}"
-say "schema=3"
+say "schema=${MIGRATION_TARGET}"
 say "Rollback: pin the previous image for the web service, then:"
 say "  ${compose[*]} up -d"

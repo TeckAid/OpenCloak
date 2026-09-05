@@ -56,7 +56,14 @@ if ($link === null) {
 // ---- Effective rules (campaign or link-local) --------------------------------------
 $rules = effective_rules($db, $link);
 $pendingVisitorIssue = null;
+$inactiveCampaignWhitePage = '';
 if ($rules === null) {
+    // Warm-up support: a paused campaign still serves its own white page
+    if (!empty($link['campaign_id'])) {
+        $stmt = $db->prepare("SELECT white_page FROM campaigns WHERE id = ? AND user_id = ?");
+        $stmt->execute([(int) $link['campaign_id'], (int) $link['user_id']]);
+        $inactiveCampaignWhitePage = (string) ($stmt->fetchColumn() ?: '');
+    }
     $evalResult = ['allowed' => false, 'reasons' => ['campaign_inactive']];
     $detector = new BotDetector();
     $detector->detect(['datacenter' => false, 'tor' => false]);
@@ -237,6 +244,8 @@ if ($rejectMode === 'error') {
 
 if (!empty($rules['white_page'])) {
     echo $rules['white_page'];
+} elseif ($inactiveCampaignWhitePage !== '') {
+    echo $inactiveCampaignWhitePage;
 } else {
     echo defined('DEFAULT_WHITE_PAGE') ? DEFAULT_WHITE_PAGE
          : '<html><body><h1>Page Not Found</h1></body></html>';

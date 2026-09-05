@@ -76,6 +76,15 @@ function get_database_migrations(): array
                 $db->exec('DROP TABLE IF EXISTS client_credentials');
             },
         ],
+        4 => [
+            'file' => $dir . DIRECTORY_SEPARATOR . '004_ip_rules.sql',
+            'down' => static function (PDO $db): void {
+                $db->exec('ALTER TABLE links DROP COLUMN block_ipv6');
+                $db->exec('ALTER TABLE links DROP COLUMN ip_allowlist');
+                $db->exec('ALTER TABLE campaigns DROP COLUMN block_ipv6');
+                $db->exec('ALTER TABLE campaigns DROP COLUMN ip_allowlist');
+            },
+        ],
     ];
 }
 

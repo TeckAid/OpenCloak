@@ -191,8 +191,7 @@ final class BotDetectorTest extends TestCase
     }
 
     public function test_geo_rule_fails_closed_when_cloudflare_headers_absent_and_adapter_unavailable(): void
-    {
-        if (!defined('IP_INTELLIGENCE_FAILURE_MODE')) {
+    {        if (!defined('IP_INTELLIGENCE_FAILURE_MODE')) {
             define('IP_INTELLIGENCE_FAILURE_MODE', 'closed');
         }
 
@@ -217,5 +216,78 @@ final class BotDetectorTest extends TestCase
 
         $this->assertFalse($evaluation['allowed']);
         $this->assertTrue(in_array('ip_intelligence_unavailable', $evaluation['reasons'], true));
+    }
+
+    public function test_ip_allowlist_overrides_all_rules(): void
+    {
+        $detector = new BotDetector(
+            '198.51.100.20',
+            'curl/8.4.0',
+            ['accept' => '', 'language' => '', 'referer' => ''],
+            static fn (): false => false
+        );
+        $evaluation = $detector->evaluate([
+            'ip_allowlist' => "192.0.2.1\n198.51.100.0/24",
+            'block_bots' => 1,
+            'block_curl' => 1,
+            'block_datacenters' => 1,
+            'block_review_infra' => 1,
+            'allowed_countries' => 'US',
+            'block_ipv6' => 1,
+            'block_tor' => 0,
+            'block_vpn' => 0,
+            'block_headless' => 0,
+            'fast_mode' => 1,
+        ]);
+
+        $this->assertTrue($evaluation['allowed'], 'A whitelisted IP must bypass every rule');
+        $this->assertSame([], $evaluation['reasons']);
+    }
+
+    public function test_ip_allowlist_does_not_match_other_ips(): void
+    {
+        $detector = new BotDetector(
+            '203.0.113.10',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
+            ['accept' => 'text/html', 'language' => 'en-US', 'referer' => 'https://example.test'],
+            static fn (): false => false
+        );
+        $evaluation = $detector->evaluate([
+            'ip_allowlist' => '198.51.100.0/24',
+            'block_bots' => 1,
+            'block_datacenters' => 0,
+            'block_review_infra' => 0,
+            'block_tor' => 0,
+            'block_vpn' => 0,
+            'block_headless' => 0,
+            'block_curl' => 0,
+            'fast_mode' => 1,
+        ]);
+
+        $this->assertTrue($evaluation['allowed']);
+    }
+
+    public function test_block_ipv6_denies_ipv6_clients(): void
+    {
+        $detector = new BotDetector(
+            '2001:db8::1',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
+            ['accept' => 'text/html', 'language' => 'en-US', 'referer' => 'https://example.test'],
+            static fn (): false => false
+        );
+        $evaluation = $detector->evaluate([
+            'block_ipv6' => 1,
+            'block_bots' => 0,
+            'block_datacenters' => 0,
+            'block_review_infra' => 0,
+            'block_tor' => 0,
+            'block_vpn' => 0,
+            'block_headless' => 0,
+            'block_curl' => 0,
+            'fast_mode' => 1,
+        ]);
+
+        $this->assertFalse($evaluation['allowed']);
+        $this->assertTrue(in_array('ipv6_blocked', $evaluation['reasons'], true));
     }
 }

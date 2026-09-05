@@ -22,7 +22,7 @@ bash ops/backup_sqlite.sh \
   --app-key=/srv/cloaking/runtime/app.key \
   --config=/srv/cloaking/config/config.local.php \
   --output=/srv/cloaking/backups/$(date -u +%Y%m%dT%H%M%SZ) \
-  --migration-target=3 \
+  --migration-target=4 \
   --source-commit="$SOURCE_COMMIT" \
   --image-digest="$IMAGE_DIGEST"
 ```

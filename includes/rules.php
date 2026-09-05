@@ -224,7 +224,7 @@ const IN_APP_CLIENTS = [
 ];
 
 const RULE_COLUMNS = [
-    'block_bots', 'block_datacenters', 'block_review_infra', 'block_vpn', 'block_tor', 'block_headless', 'block_curl',
+    'block_bots', 'block_datacenters', 'block_review_infra', 'block_vpn', 'block_tor', 'block_headless', 'block_curl', 'block_ipv6',
     'allowed_countries', 'blocked_countries',
     'allowed_clients', 'blocked_clients',
     'allowed_devices', 'blocked_devices',
@@ -237,11 +237,12 @@ const RULE_COLUMNS = [
     'offer_urls', 'rotation_mode', 'offer_routes',
     'offer_method', 'forward_utms', 'no_cache', 'fast_mode',
     'delay_start', 'delay_permanent', 'allow_geo_override',
+    'ip_allowlist',
 ];
 
 const FLAG_COLUMNS = [
     'is_active',
-    'block_bots', 'block_datacenters', 'block_review_infra', 'block_vpn', 'block_tor', 'block_headless', 'block_curl',
+    'block_bots', 'block_datacenters', 'block_review_infra', 'block_vpn', 'block_tor', 'block_headless', 'block_curl', 'block_ipv6',
     'allow_empty_referer', 'require_screen_info', 'single_visit_only',
     'forward_utms', 'no_cache', 'fast_mode', 'delay_permanent', 'allow_geo_override',
 ];
@@ -261,6 +262,7 @@ const CAMPAIGN_MUTABLE_COLUMNS = [
     'allowed_resolutions', 'blocked_resolutions', 'require_screen_info', 'single_visit_only',
     'offer_urls', 'rotation_mode', 'offer_routes',
     'offer_method', 'forward_utms', 'no_cache', 'fast_mode', 'delay_start', 'delay_permanent', 'allow_geo_override',
+    'ip_allowlist', 'block_ipv6',
 ];
 
 const LINK_MUTABLE_COLUMNS = [
@@ -273,6 +275,7 @@ const LINK_MUTABLE_COLUMNS = [
     'allowed_resolutions', 'blocked_resolutions', 'require_screen_info', 'single_visit_only',
     'offer_urls', 'rotation_mode', 'offer_routes',
     'offer_method', 'forward_utms', 'no_cache', 'fast_mode', 'delay_start', 'delay_permanent', 'allow_geo_override',
+    'ip_allowlist', 'block_ipv6',
 ];
 
 /**

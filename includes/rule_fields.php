@@ -18,6 +18,12 @@ if (!defined('DEVICE_TYPES')) {
         <label class="checkbox"><input type="checkbox" name="block_tor" value="1" <?= !empty($r['block_tor']) ? 'checked' : '' ?>> Block Tor</label>
         <label class="checkbox"><input type="checkbox" name="block_headless" value="1" <?= !empty($r['block_headless']) ? 'checked' : '' ?>> Block Headless Browsers</label>
         <label class="checkbox"><input type="checkbox" name="block_curl" value="1" <?= !empty($r['block_curl']) ? 'checked' : '' ?>> Block Curl/HTTP Clients</label>
+        <label class="checkbox"><input type="checkbox" name="block_ipv6" value="1" <?= !empty($r['block_ipv6']) ? 'checked' : '' ?>> Block IPv6</label>
+    </div>
+    <div class="form-group">
+        <label>IP Allowlist (always show the offer — one IP or CIDR per line, for your own testing)</label>
+        <textarea name="ip_allowlist" rows="2" placeholder="203.0.113.10&#10;198.51.100.0/24"><?= htmlspecialchars($r['ip_allowlist'] ?? '') ?></textarea>
+        <p class="form-hint">Whitelisted IPs bypass every rule and see the offer.</p>
     </div>
     <p class="form-hint">"Block Platform Review Infra" denies traffic from known ad-platform networks
     (Meta AS32934, Google AS15169/36040, ByteDance AS396986, Microsoft, Apple, X, Pinterest, Yahoo).</p>
