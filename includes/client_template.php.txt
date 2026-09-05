@@ -48,6 +48,10 @@ function cloak_verify(array $fingerprint, string $visitorToken, string $visitorC
         'visitor_token' => $visitorToken,
         'visitor_cookie' => $visitorCookie,
         'visitor_https' => cloak_is_https(),
+        // Forwarded Cloudflare edge headers (used when the landing server
+        // itself sits behind Cloudflare)
+        'cf_ipcountry' => $_SERVER['HTTP_CF_IPCOUNTRY'] ?? '',
+        'cf_ipasn' => $_SERVER['HTTP_CF_IPASN'] ?? '',
     ]);
 
     $ctx = stream_context_create(['http' => [

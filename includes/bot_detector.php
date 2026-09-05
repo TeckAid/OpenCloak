@@ -19,6 +19,8 @@ class BotDetector
     private mixed $ipIntelligenceTransport;
     private ?array $detected = null;
     private ?array $validatedParams = null;
+    private array $cfHeaders = ['country' => '', 'asn' => ''];
+    private bool $cfAsnClassified = false;
 
     private array $result = [
         'is_bot'          => false,
@@ -128,6 +130,18 @@ class BotDetector
         $this->ip = $ip ?: app_client_ip();
         $this->userAgent = $userAgent ?: $this->envStr('HTTP_USER_AGENT', '');
         $this->headers = $this->collectHeaders();
+
+        // Cloudflare geo headers: caller-supplied context (client-deployment
+        // mode) takes precedence; otherwise only honored when TRUST_CLOUDFLARE
+        // is enabled and the request passed through Cloudflare.
+        $country = trim((string) ($context['cf_ipcountry'] ?? ''));
+        $asn = trim((string) ($context['cf_ipasn'] ?? ''));
+        if ($country === '' && $asn === '' && function_exists('app_cloudflare_headers')) {
+            $serverCf = app_cloudflare_headers();
+            $country = $serverCf['country'];
+            $asn = $serverCf['asn'];
+        }
+        $this->cfHeaders = ['country' => $country, 'asn' => $asn];
     }
 
     /**
@@ -147,8 +161,16 @@ class BotDetector
         $this->checkBehavior();
         $this->parseClientInfo();
 
+        // Country-only need: Cloudflare geo headers can satisfy this without
+        // any adapter call. Falls back to the adapter when absent.
+        if (!empty($needs['geo']) && empty($needs['datacenter'])) {
+            $this->applyCloudflareHeaders();
+            if ($this->result['country'] === '' && !$this->isPrivateIP($this->ip)) {
+                $this->checkDatacenter(false);
+            }
+        }
         if (!empty($needs['datacenter']) && !$this->isPrivateIP($this->ip)) {
-            $this->checkDatacenter();
+            $this->checkDatacenter(!empty($needs['vpn']));
         }
         if (!empty($needs['tor']) && !$this->isPrivateIP($this->ip)) {
             $this->checkTor();
@@ -176,15 +198,16 @@ class BotDetector
     public function evaluate(array $rules, array $fingerprint = [], bool $tokenPresent = false): array
     {
         $needs = [
-            'datacenter' => !empty($rules['block_datacenters']) || !empty($rules['block_vpn'])
-                || !empty($rules['block_review_infra'])
-                || !empty($rules['allowed_countries']) || !empty($rules['blocked_countries']),
+            'datacenter' => !empty($rules['block_datacenters']) || !empty($rules['block_review_infra'])
+                || !empty($rules['block_vpn']),
+            'vpn' => !empty($rules['block_vpn']),
+            'geo' => !empty($rules['allowed_countries']) || !empty($rules['blocked_countries']),
             'tor' => !empty($rules['block_tor']),
             'dns' => !empty($rules['block_bots']) || !empty($rules['block_review_infra']),
         ];
         // Fast mode: skip all network lookups for maximum speed
         if (!empty($rules['fast_mode'])) {
-            $needs = ['datacenter' => false, 'tor' => false, 'dns' => false];
+            $needs = ['datacenter' => false, 'vpn' => false, 'geo' => false, 'tor' => false, 'dns' => false];
         }
         $result = $this->detect($needs);
         $reasons = [];
@@ -201,7 +224,7 @@ class BotDetector
         if (!empty($rules['block_tor']) && $result['is_tor'])              $deny('tor_exit_node');
         if (!empty($rules['block_headless']) && $result['is_headless'])    $deny('headless_browser');
         if (!empty($rules['block_curl']) && $result['is_curl'])            $deny('http_client');
-        if (!empty($needs['datacenter'])
+        if ((!empty($needs['datacenter']) || !empty($needs['geo']))
             && ($result['ip_intelligence_status'] ?? '') === 'unavailable'
             && (!defined('IP_INTELLIGENCE_FAILURE_MODE') || strtolower((string) IP_INTELLIGENCE_FAILURE_MODE) !== 'open')) {
             $deny('ip_intelligence_unavailable');
@@ -512,8 +535,22 @@ class BotDetector
 
     // ---- Network checks -----------------------------------------------------------------
 
-    private function checkDatacenter(): void
+    private function checkDatacenter(bool $needProxyFlags = false): void
     {
+        // Cloudflare edge headers may satisfy country and/or ASN without an
+        // adapter round trip. Proxy/hosting flags still require the adapter.
+        $this->applyCloudflareHeaders();
+
+        $needAdapter = $needProxyFlags
+            || $this->result['country'] === ''
+            || !$this->cfAsnClassified;
+        if (!$needAdapter) {
+            if ($this->result['ip_intelligence_status'] === 'not_requested') {
+                $this->result['ip_intelligence_status'] = 'ok';
+            }
+            return;
+        }
+
         $fetcher = fn (string $ip): ?array => app_fetch_ip_intelligence($ip, $this->ipIntelligenceTransport);
         $data = $this->ipIntelligenceTransport !== null
             ? $fetcher($this->ip)
@@ -531,15 +568,8 @@ class BotDetector
         }
         $this->result['ip_intelligence_status'] = 'ok';
 
-        $asnKey = (string) ($data['asn'] ?? '');
-        if (isset(self::$reviewInfraASNs[$asnKey])) {
-            $this->result['is_review_infra'] = true;
-            $this->result['review_platform'] = self::$reviewInfraASNs[$asnKey];
-            $this->result['reasons'][] = 'review_infra_asn:' . $asnKey;
-        }
-        if (in_array($asnKey, self::$datacenterASNs, true)) {
-            $this->result['is_datacenter'] = true;
-            $this->result['reasons'][] = 'datacenter_asn:' . $asnKey;
+        if (!$this->cfAsnClassified) {
+            $this->classifyAsn((string) ($data['asn'] ?? ''));
         }
         if ($data['is_hosting'] === true) {
             $this->result['is_datacenter'] = true;
@@ -549,7 +579,41 @@ class BotDetector
             $this->result['is_vpn'] = true;
             $this->result['reasons'][] = 'proxy_detected';
         }
-        $this->result['country'] = (string) ($data['country_code'] ?? '');
+        if ($this->result['country'] === '') {
+            $this->result['country'] = (string) ($data['country_code'] ?? '');
+        }
+    }
+
+    /**
+     * Apply validated Cloudflare geo headers (CF-IPCountry / CF-IPASN).
+     * Caller-supplied context values or TRUST_CLOUDFLARE-gated server
+     * headers are read once in the constructor.
+     */
+    private function applyCloudflareHeaders(): void
+    {
+        if ($this->result['country'] === '' && $this->cfHeaders['country'] !== '') {
+            $this->result['country'] = $this->cfHeaders['country'];
+        }
+        if (!$this->cfAsnClassified && $this->cfHeaders['asn'] !== '') {
+            $this->classifyAsn($this->cfHeaders['asn']);
+            $this->cfAsnClassified = true;
+        }
+    }
+
+    /**
+     * Classify an ASN against the platform review-infra and datacenter lists.
+     */
+    private function classifyAsn(string $asnKey): void
+    {
+        if (isset(self::$reviewInfraASNs[$asnKey])) {
+            $this->result['is_review_infra'] = true;
+            $this->result['review_platform'] = self::$reviewInfraASNs[$asnKey];
+            $this->result['reasons'][] = 'review_infra_asn:' . $asnKey;
+        }
+        if (in_array($asnKey, self::$datacenterASNs, true)) {
+            $this->result['is_datacenter'] = true;
+            $this->result['reasons'][] = 'datacenter_asn:' . $asnKey;
+        }
     }
 
     private function checkTor(): void

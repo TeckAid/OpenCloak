@@ -433,6 +433,10 @@ switch ($resource) {
             'language' => app_array_get_scalar($input, 'language', 255, 'language') ?? '',
             'referer' => app_array_get_scalar($input, 'referer', 2048, 'referer') ?? '',
             'params' => $params,
+            // Cloudflare edge headers forwarded by a client-deployment landing
+            // server (validated by schema in the detector)
+            'cf_ipcountry' => app_array_get_scalar($input, 'cf_ipcountry', 8, 'cf_ipcountry') ?? '',
+            'cf_ipasn' => app_array_get_scalar($input, 'cf_ipasn', 32, 'cf_ipasn') ?? '',
         ];
         $fingerprint = is_array($input['fingerprint'] ?? null) ? $input['fingerprint'] : [];
         $visitorToken = trim(app_array_get_scalar($input, 'visitor_token', 512, 'visitor_token') ?? '');

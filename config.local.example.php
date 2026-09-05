@@ -36,6 +36,13 @@ define('TRUSTED_PROXIES', [
     // '173.245.48.0/20', // Cloudflare example (CIDR blocks supported)
 ]);
 
+// Trust Cloudflare edge headers (CF-Connecting-IP, CF-IPCountry, CF-IPASN)
+// when the CF-RAY header is present. Enable ONLY when the origin firewall
+// accepts traffic exclusively from Cloudflare's published IP ranges.
+// When enabled, CF-IPCountry/CF-IPASN satisfy geo and ASN rules without an
+// IP-intelligence adapter call.
+define('TRUST_CLOUDFLARE', false);
+
 // Disable the Tor exit-node DNSBL lookup if DNS is slow in your environment
 define('ENABLE_TOR_CHECK', true);
 

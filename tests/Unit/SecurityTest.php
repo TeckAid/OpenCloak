@@ -150,6 +150,79 @@ PHP);
         $this->assertFalse(str_starts_with($value['db_path'], $value['app_root'] . DIRECTORY_SEPARATOR));
     }
 
+    public function test_cloudflare_headers_ignored_when_trust_disabled(): void
+    {
+        $value = $this->runSecurityProbe(<<<'PHP'
+define('TRUST_CLOUDFLARE', false);
+$_SERVER['REMOTE_ADDR'] = '172.70.0.1';
+$_SERVER['HTTP_CF_RAY'] = '8f00aaaa';
+$_SERVER['HTTP_CF_CONNECTING_IP'] = '198.51.100.20';
+$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
+$_SERVER['HTTP_CF_IPASN'] = 'AS15169';
+return [
+    'client_ip' => app_client_ip(),
+    'cf' => app_cloudflare_headers(),
+];
+PHP);
+
+        $this->assertSame('172.70.0.1', $value['client_ip']);
+        $this->assertSame(['country' => '', 'asn' => ''], $value['cf']);
+    }
+
+    public function test_cloudflare_headers_trusted_only_with_cf_ray_present(): void
+    {
+        $value = $this->runSecurityProbe(<<<'PHP'
+define('TRUST_CLOUDFLARE', true);
+$_SERVER['REMOTE_ADDR'] = '172.70.0.1';
+$_SERVER['HTTP_CF_RAY'] = '8f00bbbb';
+$_SERVER['HTTP_CF_CONNECTING_IP'] = '198.51.100.20';
+$_SERVER['HTTP_CF_IPCOUNTRY'] = 'us';
+$_SERVER['HTTP_CF_IPASN'] = 'as15169';
+$_SERVER['HTTP_CF_VISITOR'] = '{"scheme":"https"}';
+return [
+    'client_ip' => app_client_ip(),
+    'is_https' => app_is_https(),
+    'cf' => app_cloudflare_headers(),
+];
+PHP);
+
+        $this->assertSame('198.51.100.20', $value['client_ip']);
+        $this->assertTrue($value['is_https']);
+        $this->assertSame(['country' => 'US', 'asn' => 'AS15169'], $value['cf']);
+    }
+
+    public function test_cloudflare_headers_without_cf_ray_are_not_trusted(): void
+    {
+        $value = $this->runSecurityProbe(<<<'PHP'
+define('TRUST_CLOUDFLARE', true);
+$_SERVER['REMOTE_ADDR'] = '198.51.100.9';
+$_SERVER['HTTP_CF_CONNECTING_IP'] = '203.0.113.10';
+$_SERVER['HTTP_CF_IPCOUNTRY'] = 'US';
+$_SERVER['HTTP_CF_IPASN'] = 'AS15169';
+return [
+    'client_ip' => app_client_ip(),
+    'cf' => app_cloudflare_headers(),
+];
+PHP);
+
+        $this->assertSame('198.51.100.9', $value['client_ip']);
+        $this->assertSame(['country' => '', 'asn' => ''], $value['cf']);
+    }
+
+    public function test_cloudflare_geo_headers_reject_malformed_values(): void
+    {
+        $value = $this->runSecurityProbe(<<<'PHP'
+define('TRUST_CLOUDFLARE', true);
+$_SERVER['REMOTE_ADDR'] = '172.70.0.1';
+$_SERVER['HTTP_CF_RAY'] = '8f00cccc';
+$_SERVER['HTTP_CF_IPCOUNTRY'] = 'usa';
+$_SERVER['HTTP_CF_IPASN'] = 'ASN15169';
+return app_cloudflare_headers();
+PHP);
+
+        $this->assertSame(['country' => '', 'asn' => ''], $value);
+    }
+
     /**
      * @return mixed
      */

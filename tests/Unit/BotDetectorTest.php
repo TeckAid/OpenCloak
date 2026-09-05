@@ -71,4 +71,151 @@ final class BotDetectorTest extends TestCase
         $this->assertTrue(in_array('ip_intelligence_unavailable', $evaluation['reasons'], true));
         $this->assertSame('unavailable', $result['ip_intelligence_status'] ?? null);
     }
+
+    private function intelTransport(array $data): callable
+    {
+        return static fn (): string => json_encode($data, JSON_UNESCAPED_SLASHES) ?: '';
+    }
+
+    public function test_cloudflare_country_satisfies_geo_rule_without_adapter_call(): void
+    {
+        $called = false;
+        $detector = new BotDetector(
+            '198.51.100.20',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
+            [
+                'accept' => 'text/html',
+                'language' => 'en-US',
+                'referer' => 'https://example.test',
+                'cf_ipcountry' => 'US',
+            ],
+            function () use (&$called): string {
+                $called = true;
+
+                return '{}';
+            }
+        );
+        $evaluation = $detector->evaluate([
+            'allowed_countries' => 'US',
+            'blocked_countries' => '',
+            'block_datacenters' => 0,
+            'block_vpn' => 0,
+            'block_review_infra' => 0,
+            'block_tor' => 0,
+            'block_bots' => 0,
+            'block_headless' => 0,
+            'block_curl' => 0,
+            'fast_mode' => 0,
+        ]);
+
+        $this->assertTrue($evaluation['allowed']);
+        $this->assertFalse($called, 'Adapter must not be called when Cloudflare country satisfies the geo rule');
+    }
+
+    public function test_cloudflare_asn_classifies_review_infrastructure_without_adapter_call(): void
+    {
+        $called = false;
+        $detector = new BotDetector(
+            '198.51.100.20',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
+            [
+                'accept' => 'text/html',
+                'language' => 'en-US',
+                'referer' => 'https://example.test',
+                'cf_ipcountry' => 'US',
+                'cf_ipasn' => 'AS15169',
+            ],
+            function () use (&$called): string {
+                $called = true;
+
+                return '{}';
+            }
+        );
+        $evaluation = $detector->evaluate([
+            'block_review_infra' => 1,
+            'block_datacenters' => 0,
+            'block_vpn' => 0,
+            'block_tor' => 0,
+            'block_bots' => 0,
+            'block_headless' => 0,
+            'block_curl' => 0,
+            'fast_mode' => 0,
+        ]);
+        $result = $detector->getResult();
+
+        $this->assertFalse($evaluation['allowed']);
+        $this->assertTrue(in_array('review_infrastructure', $evaluation['reasons'], true));
+        $this->assertSame('google', $result['review_platform'] ?? null);
+        $this->assertFalse($called, 'Adapter must not be called when Cloudflare ASN satisfies the rule');
+    }
+
+    public function test_vpn_rule_still_queries_adapter_even_with_cloudflare_headers(): void
+    {
+        $called = false;
+        $detector = new BotDetector(
+            '198.51.100.20',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
+            [
+                'accept' => 'text/html',
+                'language' => 'en-US',
+                'referer' => 'https://example.test',
+                'cf_ipcountry' => 'US',
+                'cf_ipasn' => 'AS15169',
+            ],
+            function () use (&$called): string {
+                $called = true;
+
+                return json_encode([
+                    'ip' => '198.51.100.20',
+                    'asn' => 'AS64500',
+                    'country_code' => 'US',
+                    'is_proxy' => true,
+                    'is_hosting' => false,
+                ], JSON_UNESCAPED_SLASHES) ?: '';
+            }
+        );
+        $evaluation = $detector->evaluate([
+            'block_vpn' => 1,
+            'block_datacenters' => 0,
+            'block_review_infra' => 0,
+            'block_tor' => 0,
+            'block_bots' => 0,
+            'block_headless' => 0,
+            'block_curl' => 0,
+            'fast_mode' => 0,
+        ]);
+
+        $this->assertTrue($called, 'VPN rules require proxy flags only the adapter can provide');
+        $this->assertFalse($evaluation['allowed']);
+        $this->assertTrue(in_array('vpn_or_proxy', $evaluation['reasons'], true));
+    }
+
+    public function test_geo_rule_fails_closed_when_cloudflare_headers_absent_and_adapter_unavailable(): void
+    {
+        if (!defined('IP_INTELLIGENCE_FAILURE_MODE')) {
+            define('IP_INTELLIGENCE_FAILURE_MODE', 'closed');
+        }
+
+        $detector = new BotDetector(
+            '1.1.1.1',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
+            ['accept' => 'text/html', 'language' => 'en-US', 'referer' => 'https://example.test'],
+            static fn (): false => false
+        );
+        $evaluation = $detector->evaluate([
+            'allowed_countries' => 'US',
+            'blocked_countries' => '',
+            'block_datacenters' => 0,
+            'block_vpn' => 0,
+            'block_review_infra' => 0,
+            'block_tor' => 0,
+            'block_bots' => 0,
+            'block_headless' => 0,
+            'block_curl' => 0,
+            'fast_mode' => 0,
+        ]);
+
+        $this->assertFalse($evaluation['allowed']);
+        $this->assertTrue(in_array('ip_intelligence_unavailable', $evaluation['reasons'], true));
+    }
 }

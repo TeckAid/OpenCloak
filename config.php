@@ -145,6 +145,16 @@ if (!defined('TRUSTED_PROXIES')) {
     define('TRUSTED_PROXIES', []);
 }
 
+// Trust Cloudflare edge headers (CF-Connecting-IP, CF-IPCountry, CF-IPASN,
+// CF-Visitor) when the CF-RAY header is present. Enable ONLY when the origin
+// firewall restricts direct traffic to Cloudflare's published IP ranges —
+// otherwise these headers can be spoofed by direct requests. When enabled,
+// CF-IPCountry/CF-IPASN satisfy geo and ASN rules without an IP-intelligence
+// adapter call.
+if (!defined('TRUST_CLOUDFLARE')) {
+    define('TRUST_CLOUDFLARE', false);
+}
+
 // ---- Cloaking defaults ------------------------------------------------------
 if (!defined('DEFAULT_WHITE_PAGE')) {
     define('DEFAULT_WHITE_PAGE', '

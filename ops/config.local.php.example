@@ -17,6 +17,11 @@ define('SYSTEM_HOSTS', [
 define('TRUSTED_PROXIES', [
     '172.23.0.2/32',
 ]);
+// When fronted by Cloudflare, set TRUST_CLOUDFLARE to true INSTEAD of listing
+// Cloudflare ranges here. Requires an origin firewall that only accepts
+// Cloudflare IPs. CF-IPCountry/CF-IPASN then satisfy geo/ASN rules without an
+// IP-intelligence adapter call.
+define('TRUST_CLOUDFLARE', false);
 // Leave disabled until docs/IP_INTELLIGENCE.md has an approved legal/vendor
 // record, then inject both values from deployment secret configuration.
 define('IP_INTELLIGENCE_ENDPOINT', '');

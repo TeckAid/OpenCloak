@@ -168,7 +168,9 @@ function app_request_context(): array
     }
 
     $remote = app_normalize_ip((string) ($_SERVER['REMOTE_ADDR'] ?? '')) ?? '127.0.0.1';
-    $trustedProxy = app_is_trusted_proxy($remote);
+    $cloudflare = defined('TRUST_CLOUDFLARE') && TRUST_CLOUDFLARE
+        && isset($_SERVER['HTTP_CF_RAY']) && trim((string) $_SERVER['HTTP_CF_RAY']) !== '';
+    $trustedProxy = $cloudflare || app_is_trusted_proxy($remote);
     $host = app_normalize_host((string) ($_SERVER['HTTP_HOST'] ?? ''));
 
     $isHttps = !empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off';
@@ -180,16 +182,54 @@ function app_request_context(): array
             $isHttps = true;
         }
     }
+    if (!$isHttps && $cloudflare) {
+        $visitor = json_decode((string) ($_SERVER['HTTP_CF_VISITOR'] ?? ''), true);
+        if (is_array($visitor) && strtolower((string) ($visitor['scheme'] ?? '')) === 'https') {
+            $isHttps = true;
+        }
+    }
+
+    $clientIp = app_resolve_client_ip($remote, $trustedProxy);
+    if ($cloudflare) {
+        $cfConnecting = app_normalize_ip((string) ($_SERVER['HTTP_CF_CONNECTING_IP'] ?? ''));
+        if ($cfConnecting !== null) {
+            $clientIp = $cfConnecting;
+        }
+    }
 
     $context = [
         'remote_ip' => $remote,
-        'client_ip' => app_resolve_client_ip($remote, $trustedProxy),
+        'client_ip' => $clientIp,
         'trusted_proxy' => $trustedProxy,
+        'cloudflare' => $cloudflare,
         'host' => $host,
         'is_https' => $isHttps,
     ];
 
     return $context;
+}
+
+/**
+ * Validated Cloudflare geo headers for the current request.
+ * Only populated when TRUST_CLOUDFLARE is enabled and the request passed
+ * through Cloudflare (CF-RAY present). Returns ['country' => '', 'asn' => ''].
+ */
+function app_cloudflare_headers(): array
+{
+    if (!app_request_context()['cloudflare']) {
+        return ['country' => '', 'asn' => ''];
+    }
+
+    $country = strtoupper(trim((string) ($_SERVER['HTTP_CF_IPCOUNTRY'] ?? '')));
+    if (preg_match('/^[A-Z]{2}$/', $country) !== 1) {
+        $country = '';
+    }
+    $asn = strtoupper(trim((string) ($_SERVER['HTTP_CF_IPASN'] ?? '')));
+    if (preg_match('/^AS\d{1,10}$/', $asn) !== 1) {
+        $asn = '';
+    }
+
+    return ['country' => $country, 'asn' => $asn];
 }
 
 function app_query_scalar(string $name, int $maxBytes = 4096): ?string

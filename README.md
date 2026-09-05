@@ -228,6 +228,7 @@ Edit `config.local.php` (copy `config.local.example.php`) to override:
 - `DB_PATH` — database location
 - `APP_BASE_URL` / `SYSTEM_HOSTS` — canonical app hostname and system-owned short-link hosts
 - `TRUSTED_PROXIES` — proxies allowed to set forwarding headers (Cloudflare etc.)
+- `TRUST_CLOUDFLARE` — trust Cloudflare edge headers (see Cloudflare deployment below)
 - `ENABLE_TOR_CHECK` — toggle Tor DNSBL lookups
 - `IP_INTELLIGENCE_ENDPOINT` / `IP_INTELLIGENCE_API_KEY` — reviewed authenticated HTTPS or local adapter
 - `IP_INTELLIGENCE_FAILURE_MODE` — `closed` by default; explicit `open` requires recorded risk acceptance
@@ -235,6 +236,55 @@ Edit `config.local.php` (copy `config.local.example.php`) to override:
 - `LOG_RETENTION_DAYS` — hit-log retention (pruned automatically)
 
 The app key is generated atomically with mode `0600` in `APP_RUNTIME_DIR/app.key` on first run unless you set it explicitly.
+
+## Cloudflare deployment
+
+Cloudflare is a good fit for the control panel, marketing site, and API, and
+Cloudflare for SaaS can provision customer custom-hostname TLS. Two deployment
+styles are supported:
+
+### Full proxy (recommended for the control panel; optional for cloaked links)
+
+1. Add your app hostname to Cloudflare and proxy DNS through it. Use SSL mode
+   `Full (strict)` with an origin certificate or valid origin cert.
+2. **Bypass Cloudflare cache for the whole app** — a cached page would be
+   served identically to bots and humans and destroy cloaking. Add a Cache
+   Rule: hostname equals your app host, then *Bypass cache* (or at minimum
+   bypass paths like `/api/*` and every short-link slug).
+3. **Disable Bot Fight Mode / Super Bot Fight Mode** on the zone. Cloudflare's
+   own challenges would otherwise intercept your buyers' ad traffic and show
+   challenge pages to ad-platform reviewers.
+4. Enable `TRUST_CLOUDFLARE = true` in `config.local.php` **and lock the
+   origin firewall to Cloudflare's published IP ranges only**. This activates
+   validated `CF-Connecting-IP` (correct client IPs), `CF-IPCountry`, and
+   `CF-IPASN` headers — country and ASN rules then evaluate from the edge
+   without an IP-intelligence adapter round trip. VPN/proxy flags still use
+   the configured adapter (see [docs/IP_INTELLIGENCE.md](docs/IP_INTELLIGENCE.md)).
+   If you cannot lock the origin firewall, leave `TRUST_CLOUDFLARE` off and
+   list Cloudflare ranges in `TRUSTED_PROXIES` instead (geo headers are then
+   ignored, not trusted).
+5. `CF-IPASN` is sent to origins when Cloudflare Managed Transforms are
+   enabled (default for most zones).
+
+### Customer custom domains (Cloudflare for SaaS)
+
+For each customer domain added in the admin **Domains** page, create a
+matching Custom Hostname in Cloudflare for SaaS pointing to your fallback
+origin. Cloudflare provisions TLS automatically; the app already matches
+requests to the domain by `HTTP_HOST`. Apply the same cache-bypass and
+bot-management-off settings to those hostnames.
+
+### Grey cloud (DNS-only) alternative
+
+For maximum traffic fidelity, point cloaked-link domains at the origin with
+DNS-only (grey cloud). You lose Cloudflare TLS/DDoS protection on those
+domains (use Caddy or certbot instead) but avoid caching, bot-management, and
+terms-of-service interplay entirely. Many operators run the panel proxied and
+landing domains grey-clouded.
+
+**Terms note:** cloaking services sit in a grey area of Cloudflare's
+acceptable-use policies. Mitigate by keeping white pages policy-compliant and
+considering the grey-cloud option for cloaked landing traffic.
 
 ## Security notes
 

@@ -27,6 +27,17 @@ times out, or returns invalid data, the request is denied with
 `ip_intelligence_unavailable`. An explicit `open` setting is an operator risk
 acceptance and must be recorded in the release ticket.
 
+## Cloudflare edge headers
+
+When the deployment is fronted by Cloudflare with `TRUST_CLOUDFLARE` enabled
+(which requires an origin firewall that accepts traffic only from Cloudflare's
+published IP ranges), validated `CF-IPCountry` and `CF-IPASN` headers satisfy
+geo and ASN rules without an adapter call. Proxy/hosting flags still require
+the adapter, so `block_vpn` rules always hit the configured intelligence
+endpoint. Fail-closed semantics are unchanged: if Cloudflare headers are
+absent and a rule needs country data, an unavailable adapter still denies with
+`ip_intelligence_unavailable` unless `open` mode was explicitly accepted.
+
 Before production use, an authorized privacy/legal reviewer must record the
 lawful basis, vendor and DPA/subprocessor approval, allowed processing regions,
 retention/deletion period, access controls, incident notification obligations,
