@@ -84,7 +84,25 @@ function readJsonBody(): array
 }
 
 // ---- Authenticate -----------------------------------------------------------
-$authHeader = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+// Apache's mod_rewrite internal redirect (root .htaccess -> /api/index.php)
+// drops the Authorization header into REDIRECT_HTTP_AUTHORIZATION; some
+// proxy stacks expose it only via getallheaders(). Accept all three sources.
+$authHeader = '';
+foreach (['HTTP_AUTHORIZATION', 'REDIRECT_HTTP_AUTHORIZATION'] as $headerKey) {
+    $candidate = $_SERVER[$headerKey] ?? '';
+    if (is_string($candidate) && trim($candidate) !== '') {
+        $authHeader = $candidate;
+        break;
+    }
+}
+if ($authHeader === '' && function_exists('getallheaders')) {
+    foreach (getallheaders() as $name => $value) {
+        if (strcasecmp((string) $name, 'Authorization') === 0 && trim((string) $value) !== '') {
+            $authHeader = (string) $value;
+            break;
+        }
+    }
+}
 $apiKey = '';
 if (preg_match('/^Bearer\s+(.+)$/i', $authHeader, $m)) {
     $apiKey = trim($m[1]);
