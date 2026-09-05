@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+umask 077
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -9,6 +10,9 @@ HTTPS_BASE_URL=""
 HTTP_BASE_URL=""
 ADMIN_USERNAME=""
 ADMIN_PASSWORD=""
+ADMIN_PASSWORD_STDIN="0"
+CA_BUNDLE=""
+CURL_TLS_ARGS=()
 HOSTILE_HOST="evil.example"
 RESTART_COMMAND=""
 EXPLICIT_CLIENT_INDEX_PATH=""
@@ -43,8 +47,9 @@ Usage:
   bash ops/smoke_test.sh \
     --https-base-url=https://app.example.com \
     --admin-username=owner \
-    --admin-password='strong password' \
+    --admin-password-stdin \
     --restart-command='docker compose restart web edge' \
+    [--ca-bundle=/path/to/private-ca.pem] \
     [--http-base-url=http://app.example.com] \
     [--hostile-host=evil.example] \
     [--client-index-path=/secure/path/index.php \
@@ -122,11 +127,31 @@ php_eval() {
 }
 
 urlencode() {
-  php_eval 'echo rawurlencode($argv[1]);' "$1"
+  printf '%s' "$1" | php -r 'echo rawurlencode(stream_get_contents(STDIN));'
 }
 
 b64() {
-  php_eval 'echo base64_encode($argv[1]);' "$1"
+  printf '%s' "$1" | php -r 'echo base64_encode(stream_get_contents(STDIN));'
+}
+
+valid_base_url() {
+  php -r '
+    $url = $argv[1];
+    $expectedScheme = $argv[2];
+    $parts = parse_url($url);
+    $valid = is_array($parts)
+        && strtolower((string) ($parts["scheme"] ?? "")) === $expectedScheme
+        && is_string($parts["host"] ?? null)
+        && $parts["host"] !== ""
+        && !isset($parts["user"])
+        && !isset($parts["pass"])
+        && !isset($parts["query"])
+        && !isset($parts["fragment"])
+        && (!isset($parts["path"]) || $parts["path"] === "" || $parts["path"] === "/")
+        && (!isset($parts["port"]) || ((int) $parts["port"] > 0 && (int) $parts["port"] <= 65535))
+        && preg_match("/[\\x00-\\x20\\x7f]/", $url) !== 1;
+    exit($valid ? 0 : 1);
+  ' "$1" "$2"
 }
 
 build_form_payload() {
@@ -156,7 +181,7 @@ request_status() {
   local headers_file="$1"
   local body_file="$2"
   shift 2
-  curl -ksS -D "${headers_file}" -o "${body_file}" -w '%{http_code}' "$@"
+  curl -sS "${CURL_TLS_ARGS[@]}" -D "${headers_file}" -o "${body_file}" -w '%{http_code}' "$@"
 }
 
 header_value() {
@@ -219,7 +244,7 @@ wait_for_http() {
   local attempt
 
   for attempt in $(seq 1 "${max_attempts}"); do
-    if curl -sS -o /dev/null "${url}" >/dev/null 2>&1; then
+    if curl -sS "${CURL_TLS_ARGS[@]}" -o /dev/null "${url}" >/dev/null 2>&1; then
       return 0
     fi
     sleep 1
@@ -237,6 +262,27 @@ extract_csrf() {
     }
     echo html_entity_decode($m[1], ENT_QUOTES);
   ' "$1"
+}
+
+extract_hidden_value() {
+  php_eval '
+    $body = file_get_contents($argv[1]);
+    $name = $argv[2];
+    if (!is_string($body)) {
+        fwrite(STDERR, "Unable to read hidden input source\n");
+        exit(1);
+    }
+    libxml_use_internal_errors(true);
+    $doc = new DOMDocument();
+    $doc->loadHTML($body);
+    $xpath = new DOMXPath($doc);
+    $nodes = $xpath->query("//input[@type=\"hidden\" and @name=\"" . $name . "\"]");
+    if ($nodes === false || $nodes->length < 1) {
+        fwrite(STDERR, "Hidden input not found: " . $name . "\n");
+        exit(1);
+    }
+    echo $nodes->item(0)->getAttribute("value");
+  ' "$1" "$2"
 }
 
 extract_textarea() {
@@ -1143,14 +1189,27 @@ fetch_admin_api_key() {
 generate_client_artifacts() {
   local headers_file="${WORK_DIR}/client-page.headers"
   local body_file="${WORK_DIR}/client-page.body"
+  local post_headers="${WORK_DIR}/client-export.headers"
+  local post_body="${WORK_DIR}/client-export.body"
+  local payload_file="${WORK_DIR}/client-export.payload"
+  local csrf
+  local rotation_nonce
   local client_router_path
 
-  get_authed_page "/admin/client.php?campaign_id=${ASSIGNED_CAMPAIGN_ID}" "${headers_file}" "${body_file}"
+  get_authed_page "/admin/client.php" "${headers_file}" "${body_file}"
+  csrf="$(extract_csrf "${body_file}")"
+  rotation_nonce="$(extract_hidden_value "${body_file}" 'rotation_nonce')"
+  build_form_payload "${payload_file}" \
+    "_csrf" "${csrf}" \
+    "rotation_nonce" "${rotation_nonce}" \
+    "campaign_id" "${ASSIGNED_CAMPAIGN_ID}" \
+    "confirm_rotation" "1"
+  post_authed_form '/admin/client.php' "${post_headers}" "${post_body}" "${payload_file}"
   CLIENT_ROOT="$(mktemp -d "${WORK_DIR}/client.XXXXXX")"
   GENERATED_CLIENT_INDEX_PATH="${CLIENT_ROOT}/index.php"
   client_router_path="${CLIENT_ROOT}/router.php"
 
-  extract_textarea "${body_file}" 'client-index' > "${GENERATED_CLIENT_INDEX_PATH}"
+  extract_textarea "${post_body}" 'client-index' > "${GENERATED_CLIENT_INDEX_PATH}"
   cp "${REPO_DIR}/assets/js/tracker.js" "${CLIENT_ROOT}/tracker.min.js"
   printf '%s\n' '<?php return false;' > "${client_router_path}"
 }
@@ -1363,8 +1422,14 @@ while (($# > 0)); do
     --admin-username=*)
       ADMIN_USERNAME="${1#*=}"
       ;;
+    --admin-password-stdin)
+      ADMIN_PASSWORD_STDIN="1"
+      ;;
     --admin-password=*)
-      ADMIN_PASSWORD="${1#*=}"
+      fail "passwords in process arguments are not supported; use --admin-password-stdin"
+      ;;
+    --ca-bundle=*)
+      CA_BUNDLE="${1#*=}"
       ;;
     --hostile-host=*)
       HOSTILE_HOST="${1#*=}"
@@ -1395,8 +1460,21 @@ done
 
 [[ -n "${HTTPS_BASE_URL}" ]] || fail "--https-base-url is required"
 [[ -n "${ADMIN_USERNAME}" ]] || fail "--admin-username is required"
-[[ -n "${ADMIN_PASSWORD}" ]] || fail "--admin-password is required"
+[[ "${ADMIN_PASSWORD_STDIN}" == "1" ]] || fail "--admin-password-stdin is required"
 [[ -n "${RESTART_COMMAND}" ]] || fail "--restart-command is required so restart persistence is verified, not assumed"
+
+require_command bash
+require_command curl
+require_command php
+require_command mktemp
+
+valid_base_url "${HTTPS_BASE_URL}" https || fail "--https-base-url must use https:// with only a host and optional port"
+HTTPS_BASE_URL="${HTTPS_BASE_URL%/}"
+
+if [[ -n "${CA_BUNDLE}" ]]; then
+  [[ -r "${CA_BUNDLE}" ]] || fail "CA bundle is not readable: ${CA_BUNDLE}"
+  CURL_TLS_ARGS=(--cacert "${CA_BUNDLE}")
+fi
 
 if [[ -n "${EXPLICIT_CLIENT_INDEX_PATH}" ]]; then
   [[ -n "${EXPLICIT_ASSIGNED_CAMPAIGN_ID}" && -n "${EXPLICIT_OTHER_CAMPAIGN_ID}" ]] \
@@ -1409,11 +1487,11 @@ fi
 if [[ -z "${HTTP_BASE_URL}" ]]; then
   HTTP_BASE_URL="${HTTPS_BASE_URL/https:\/\//http://}"
 fi
+valid_base_url "${HTTP_BASE_URL}" http || fail "--http-base-url must use http:// with only a host and optional port"
+HTTP_BASE_URL="${HTTP_BASE_URL%/}"
 
-require_command bash
-require_command curl
-require_command php
-require_command mktemp
+IFS= read -r ADMIN_PASSWORD || fail "Unable to read admin password from stdin"
+[[ -n "${ADMIN_PASSWORD}" ]] || fail "Admin password from stdin must not be empty"
 
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cloaking-smoke.XXXXXX")"
 COOKIE_JAR="${WORK_DIR}/cookies.txt"

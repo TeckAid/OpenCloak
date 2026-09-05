@@ -19,32 +19,57 @@ $stmt = $db->prepare("SELECT id, name FROM campaigns WHERE user_id = ? AND is_ac
 $stmt->execute([$userId]);
 $campaigns = $stmt->fetchAll();
 
-$selectedId = (int)($_GET['campaign_id'] ?? 0);
+$selectedId = 0;
 $selected = null;
-if ($selectedId > 0) {
-    $stmt = $db->prepare("SELECT * FROM campaigns WHERE id = ? AND user_id = ?");
-    $stmt->execute([$selectedId, $userId]);
-    $selected = $stmt->fetch() ?: null;
-}
-
 $verifyUrl = app_base_url() . '/api/verify';
-
 $clientCode = '';
 $credentialExpiresAt = null;
-if ($selected) {
-    $clientCredential = issue_client_credential($db, $userId, (int) $selected['id']);
-    $credentialRow = authenticate_client_credential($db, $clientCredential);
-    $placeholders = [
-        '{{CLIENT_CREDENTIAL}}' => $clientCredential,
-        '{{CAMPAIGN_ID}}'        => (string) $selected['id'],
-        '{{VERIFY_URL}}'         => $verifyUrl,
-    ];
-    $template = file_get_contents(__DIR__ . '/../includes/client_template.php.txt');
-    $clientCode = strtr($template, $placeholders);
-    $credentialExpiresAt = is_array($credentialRow) ? (string) ($credentialRow['expires_at'] ?? '') : null;
+$message = '';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    require_valid_post();
+    $selectedId = (int) ($_POST['campaign_id'] ?? 0);
+    $submittedNonce = is_string($_POST['rotation_nonce'] ?? null) ? $_POST['rotation_nonce'] : '';
+    $expectedNonce = is_string($_SESSION['client_rotation_nonce'] ?? null) ? $_SESSION['client_rotation_nonce'] : '';
+
+    if ($submittedNonce === '' || $expectedNonce === '' || !hash_equals($expectedNonce, $submittedNonce)) {
+        http_response_code(409);
+        $message = 'This client export request has already been used or expired. Reload and confirm again.';
+    } elseif ((string) ($_POST['confirm_rotation'] ?? '') !== '1') {
+        http_response_code(400);
+        $message = 'Confirm credential rotation before generating a client export.';
+    } else {
+        unset($_SESSION['client_rotation_nonce']);
+        $stmt = $db->prepare("SELECT * FROM campaigns WHERE id = ? AND user_id = ? AND is_active = 1");
+        $stmt->execute([$selectedId, $userId]);
+        $selected = $stmt->fetch() ?: null;
+        if ($selected === null) {
+            http_response_code(404);
+            $message = 'Active campaign not found.';
+        } else {
+            $template = file_get_contents(__DIR__ . '/../includes/client_template.php.txt');
+            if (!is_string($template) || $template === '') {
+                throw new RuntimeException('Client export template is unavailable.');
+            }
+            $clientCredential = issue_client_credential($db, $userId, (int) $selected['id']);
+            $credentialRow = authenticate_client_credential($db, $clientCredential);
+            $clientCode = strtr($template, [
+                '{{CLIENT_CREDENTIAL}}' => $clientCredential,
+                '{{CAMPAIGN_ID}}' => (string) $selected['id'],
+                '{{VERIFY_URL}}' => $verifyUrl,
+            ]);
+            $credentialExpiresAt = is_array($credentialRow) ? (string) ($credentialRow['expires_at'] ?? '') : null;
+        }
+    }
 }
 
+$_SESSION['client_rotation_nonce'] = bin2hex(random_bytes(32));
+$rotationNonce = $_SESSION['client_rotation_nonce'];
+
 $trackerCode = file_get_contents(__DIR__ . '/../assets/js/tracker.js');
+if (!is_string($trackerCode)) {
+    throw new RuntimeException('Client tracker template is unavailable.');
+}
 
 $activeNav = '/admin/client.php';
 ?>
@@ -67,7 +92,12 @@ $activeNav = '/admin/client.php';
                 The generated client calls our verification API server-side and shows the offer or safe page
                 according to the campaign rules.</p>
 
-                <form method="GET" action="/admin/client.php">
+                <?php if ($message !== ''): ?>
+                    <div class="alert alert-error"><?= htmlspecialchars($message) ?></div>
+                <?php endif; ?>
+                <form method="POST" action="/admin/client.php" onsubmit="return confirm('Generate this export and revoke the prior campaign credential?')">
+                    <?= csrf_field() ?>
+                    <input type="hidden" name="rotation_nonce" value="<?= htmlspecialchars($rotationNonce, ENT_QUOTES) ?>">
                     <div class="form-row">
                         <div class="form-group">
                             <label for="campaign_id">Campaign</label>
@@ -79,6 +109,10 @@ $activeNav = '/admin/client.php';
                                     </option>
                                 <?php endforeach; ?>
                             </select>
+                        </div>
+                        <div class="form-group">
+                            <label><input type="checkbox" name="confirm_rotation" value="1" required>
+                                I understand this revokes the prior client credential.</label>
                         </div>
                         <div class="form-group" style="align-self:flex-end">
                             <button type="submit" class="btn btn-primary">Generate Client</button>
@@ -106,14 +140,12 @@ $activeNav = '/admin/client.php';
                         <button onclick="downloadText('tracker.min.js', document.getElementById('client-tracker').value)" class="btn btn-primary">Download tracker.min.js</button>
                     </div>
 
-                    <h3 style="margin-top:2rem">Step 3 — Optional money page</h3>
-                    <p>If the campaign's offer URL is not a full http(s) link but a filename (e.g. <code>page.html</code>),
-                    the client will render that file from its own directory. Otherwise visitors are redirected to the offer URL.</p>
                     <?php if ($credentialExpiresAt): ?>
                         <p><strong>Scoped verify credential:</strong> this export rotates the prior campaign token and expires at
                         <code><?= htmlspecialchars($credentialExpiresAt) ?> UTC</code>.</p>
                     <?php endif; ?>
                     <p>Upload both files to your landing server directory, ensure PHP is available, then visit the URL.
+                    Offer targets must be validated HTTP(S) URLs configured on the campaign.
                     Results appear in the <a href="/admin/dashboard.php">Dashboard</a>.</p>
                 </div>
             </div>

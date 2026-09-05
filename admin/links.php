@@ -101,8 +101,7 @@ $stmt->execute([$userId]);
 $domains = $stmt->fetchAll();
 
 $baseUrl = app_base_url();
-$primaryHost = (string)(explode(':', $_SERVER['HTTP_HOST'] ?? '')[0]);
-$debugToken = defined('DEBUG_TOKEN') ? DEBUG_TOKEN : '';
+$primaryHost = (string) (parse_url($baseUrl, PHP_URL_HOST) ?: '127.0.0.1');
 
 $r = $editingLink ?: ['is_active' => 0, 'allow_empty_referer' => 0, 'block_review_infra' => 0];
 $boundCampaign = $editingLink && !empty($editingLink['campaign_id']);
@@ -266,17 +265,19 @@ $activeNav = '/admin/links.php';
                             <?php foreach ($links as $link): ?>
                                 <?php
                                 $linkDomain = $link['domain_name'] ?: $primaryHost;
-                                $linkUrl = (app_is_https() ? 'https' : 'http') . '://' . $linkDomain . '/' . rawurlencode($link['slug']);
+                                $linkUrl = $link['domain_name']
+                                    ? 'https://' . $linkDomain . '/' . rawurlencode($link['slug'])
+                                    : $baseUrl . '/' . rawurlencode($link['slug']);
                                 ?>
                                 <tr>
                                     <td><?= htmlspecialchars($link['name'] ?: '-') ?></td>
                                     <td>
                                         <code class="link-url" title="Click to copy" data-copy="<?= htmlspecialchars($linkUrl) ?>"><?= htmlspecialchars($linkUrl) ?></code>
-                                        <?php if ($debugToken): ?>
-                                            <div class="link-sub">
-                                                <a href="<?= htmlspecialchars($linkUrl) ?>?_debug=<?= htmlspecialchars($debugToken) ?>" target="_blank" rel="noopener">Test</a>
-                                            </div>
-                                        <?php endif; ?>
+                                        <form method="POST" action="/admin/diagnostics.php" target="_blank" style="display:inline">
+                                            <?= csrf_field() ?>
+                                            <input type="hidden" name="link_id" value="<?= (int) $link['id'] ?>">
+                                            <button type="submit" class="btn btn-sm">Diagnostics</button>
+                                        </form>
                                     </td>
                                     <td><?= htmlspecialchars($linkDomain) ?></td>
                                     <td><?= htmlspecialchars($link['campaign_name'] ?: '—') ?></td>

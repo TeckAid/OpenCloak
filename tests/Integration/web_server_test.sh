@@ -8,6 +8,7 @@ MODE="${1:-all}"
 
 declare -a ACTIVE_CONTAINERS=()
 ACTIVE_COMPOSE_PROJECT=""
+ACTIVE_COMPOSE_RUNTIME=""
 
 cleanup() {
   local container_id
@@ -20,8 +21,11 @@ cleanup() {
   if [[ -n "${ACTIVE_COMPOSE_PROJECT}" ]]; then
     (
       cd "${REPO_DIR}"
-      CLOAKING_HTTP_PORT=18080 CLOAKING_HTTPS_PORT=18443 docker compose -p "${ACTIVE_COMPOSE_PROJECT}" down -v >/dev/null 2>&1 || true
+      CLOAKING_RUNTIME_PATH="${ACTIVE_COMPOSE_RUNTIME}" CLOAKING_HTTP_PORT=18080 CLOAKING_HTTPS_PORT=18443 docker compose -p "${ACTIVE_COMPOSE_PROJECT}" down -v >/dev/null 2>&1 || true
     )
+  fi
+  if [[ -n "${ACTIVE_COMPOSE_RUNTIME}" ]]; then
+    rm -rf "${ACTIVE_COMPOSE_RUNTIME}"
   fi
 }
 trap cleanup EXIT
@@ -263,16 +267,17 @@ run_caddy_suite() {
   local web_container_id
 
   ACTIVE_COMPOSE_PROJECT="cloaking-int-${RANDOM}${RANDOM}"
+  ACTIVE_COMPOSE_RUNTIME="$(mktemp -d "${TMPDIR:-/tmp}/cloaking-caddy-runtime.XXXXXX")"
 
   (
     cd "${REPO_DIR}"
-    CLOAKING_HTTP_PORT=18080 CLOAKING_HTTPS_PORT=18443 docker compose -p "${ACTIVE_COMPOSE_PROJECT}" up -d --build web edge >/dev/null
+    CLOAKING_RUNTIME_PATH="${ACTIVE_COMPOSE_RUNTIME}" CLOAKING_HTTP_PORT=18080 CLOAKING_HTTPS_PORT=18443 docker compose -p "${ACTIVE_COMPOSE_PROJECT}" up -d --build web edge >/dev/null
   )
 
   wait_for_http "https://app.localhost:18443/healthz" -k --resolve app.localhost:18443:127.0.0.1
   web_container_id="$(
     cd "${REPO_DIR}" &&
-    docker compose -p "${ACTIVE_COMPOSE_PROJECT}" ps -q web
+    CLOAKING_RUNTIME_PATH="${ACTIVE_COMPOSE_RUNTIME}" docker compose -p "${ACTIVE_COMPOSE_PROJECT}" ps -q web
   )"
 
   assert_status_only "caddy-unknown-host" "http://127.0.0.1:18080/healthz" "421" "ok" -H 'Host: bad.localhost'

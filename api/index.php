@@ -437,7 +437,15 @@ switch ($resource) {
         $fingerprint = is_array($input['fingerprint'] ?? null) ? $input['fingerprint'] : [];
         $visitorToken = trim(app_array_get_scalar($input, 'visitor_token', 512, 'visitor_token') ?? '');
         $visitorCookie = trim(app_array_get_scalar($input, 'visitor_cookie', 2048, 'visitor_cookie') ?? '');
-        $verifiedVisitor = $visitorToken !== '' ? verify_visitor_token($visitorCookie, visitor_scope_key('campaign', $campaignId)) : false;
+        if (array_key_exists('visitor_https', $input) && !is_bool($input['visitor_https'])) {
+            apiError('visitor_https must be a boolean.', 400);
+        }
+        $visitorHttps = ($input['visitor_https'] ?? false) === true;
+        if ($visitorToken !== '' && (!$visitorHttps || !app_is_https())) {
+            apiError('HTTPS is required for visitor verification.', 403);
+        }
+        $visitorScope = visitor_scope_key('campaign', $campaignId);
+        $verifiedVisitor = $visitorToken !== '' ? verify_visitor_token($visitorCookie, $visitorScope) : false;
         $tokenPresent = is_string($verifiedVisitor) && hash_equals($verifiedVisitor, $visitorToken);
 
         $needsFp = !empty($campaign['require_screen_info'])
@@ -458,6 +466,13 @@ switch ($resource) {
             }
         }
 
+        $delivery = build_delivery_config($campaign, (string) ($result['country'] ?? ''), (int) $campaign['offer_shows']);
+        $passTarget = $eval['allowed'] ? (string) $delivery['offer_url'] : '';
+        if ($passTarget !== '' && !is_valid_offer_url($passTarget)) {
+            $eval = ['allowed' => false, 'reasons' => ['invalid_offer_url']];
+            $passTarget = '';
+        }
+
         if (defined('LOG_ENABLED') && LOG_ENABLED) {
             $utm = $params['utm_source'] ?? '';
             $source = derive_source(
@@ -465,42 +480,33 @@ switch ($resource) {
                 (string)($result['client_type'] ?? ''),
                 $utm
             );
-            $db->prepare("
-                INSERT INTO hit_log (link_id, campaign_id, host, ip, user_agent, referer, language, country,
-                                     device_type, os_name, os_version, client_type, source,
-                                     is_bot, is_vpn, is_datacenter, shown_page, reject_reason)
-                VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ")->execute([
-                $campaignId,
-                app_array_get_scalar($input, 'host', 255, 'host') ?? '',
-                $ip,
-                $userAgent,
-                $context['referer'],
-                $context['language'],
-                $result['country'] ?? '',
-                $result['device_type'] ?? '',
-                $result['os_name'] ?? '',
-                $result['os_version'] ?? '',
-                $result['client_type'] ?? '',
-                $source,
-                !empty($result['is_bot']) ? 1 : 0,
-                !empty($result['is_vpn']) ? 1 : 0,
-                !empty($result['is_datacenter']) ? 1 : 0,
-                $eval['allowed'] ? 'offer' : 'white',
-                $eval['allowed'] ? null : implode(',', $eval['reasons']),
-            ]);
-            $col = $eval['allowed'] ? 'offer_shows' : 'white_shows';
-            $db->prepare("UPDATE campaigns SET total_hits = total_hits + 1, {$col} = {$col} + 1 WHERE id = ?")
-               ->execute([$campaignId]);
+            record_hit($db, [
+                'link_id' => null,
+                'campaign_id' => $campaignId,
+                'host' => app_array_get_scalar($input, 'host', 255, 'host') ?? '',
+                'ip' => $ip,
+                'user_agent' => $userAgent,
+                'referer' => $context['referer'],
+                'language' => $context['language'],
+                'country' => $result['country'] ?? '',
+                'device_type' => $result['device_type'] ?? '',
+                'os_name' => $result['os_name'] ?? '',
+                'os_version' => $result['os_version'] ?? '',
+                'client_type' => $result['client_type'] ?? '',
+                'source' => $source,
+                'is_bot' => !empty($result['is_bot']),
+                'is_vpn' => !empty($result['is_vpn']),
+                'is_datacenter' => !empty($result['is_datacenter']),
+                'reject_reason' => $eval['allowed'] ? null : implode(',', $eval['reasons']),
+            ], (bool) $eval['allowed']);
         }
 
-        $delivery = build_delivery_config($campaign, (string)($result['country'] ?? ''), (int)$campaign['offer_shows']);
-        $passTarget = $eval['allowed'] ? (string) $delivery['offer_url'] : '';
-        if ($passTarget !== '' && !is_valid_offer_url($passTarget)) {
-            $eval = ['allowed' => false, 'reasons' => ['invalid_offer_url']];
-            $passTarget = '';
-        }
-
+        $visitorIssue = visitor_cookie_issue(
+            $visitorScope,
+            $visitorToken,
+            $visitorHttps && app_is_https(),
+            (bool) $eval['allowed']
+        );
         apiSuccess([
             'allowed' => $eval['allowed'],
             'reasons' => $eval['reasons'],
@@ -512,9 +518,8 @@ switch ($resource) {
             'reject_target' => (string)($campaign['white_page'] ?? ''),
             'redirect_type' => $delivery['redirect_type'],
             'redirect_delay' => $delivery['redirect_delay'],
-            'visitor_cookie' => ($eval['allowed'] && $visitorToken !== '')
-                ? sign_visitor_token(visitor_scope_key('campaign', $campaignId), $visitorToken)
-                : '',
+            'visitor_cookie_name' => is_array($visitorIssue) ? $visitorIssue['name'] : '',
+            'visitor_cookie' => is_array($visitorIssue) ? $visitorIssue['value'] : '',
         ]);
 
     case 'stats':

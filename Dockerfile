@@ -24,15 +24,15 @@ COPY --chown=root:root includes /var/www/html/includes
 COPY --chown=root:root migrations /var/www/html/migrations
 
 RUN printf 'ok\n' > /var/www/html/healthz \
-    && find /var/www/html -mindepth 1 -maxdepth 1 ! -name data ! -name logs -exec chown -R root:root {} + \
-    && find /var/www/html -type d ! -path '/var/www/html/data*' ! -path '/var/www/html/logs*' -exec chmod 755 {} \; \
-    && find /var/www/html -type f ! -path '/var/www/html/data*' ! -path '/var/www/html/logs*' -exec chmod 644 {} \; \
-    && install -d -o 33 -g 33 -m 0770 /var/www/html/data /var/www/html/logs \
+    && chown -R root:root /var/www/html \
+    && find /var/www/html -type d -exec chmod 755 {} \; \
+    && find /var/www/html -type f -exec chmod 644 {} \; \
+    && install -d -o 33 -g 33 -m 0770 /srv/cloaking/runtime/logs \
     && printf '%s\n' \
         '#!/bin/sh' \
         'set -eu' \
-        'install -d -o 33 -g 33 -m 0770 /var/www/html/data /var/www/html/logs' \
-        'chown 33:33 /var/www/html/data /var/www/html/logs' \
+        'install -d -o 33 -g 33 -m 0770 /srv/cloaking/runtime /srv/cloaking/runtime/logs' \
+        'chown 33:33 /srv/cloaking/runtime /srv/cloaking/runtime/logs' \
         'exec docker-php-entrypoint apache2-foreground' \
         > /usr/local/bin/cloaking-entrypoint \
     && chmod 755 /usr/local/bin/cloaking-entrypoint

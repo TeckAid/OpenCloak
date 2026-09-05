@@ -79,9 +79,12 @@ No CSRF tokens on any admin form. An attacker who can lure a logged-in admin to 
 ### 3.3 Debug endpoint leaks link internals
 **File:** `index.php:75`
 
-`?_debug=1` dumps the full detection result *and* the entire link row (including `offer_url`). It is gated on `$_SERVER['REMOTE_ADDR'] === '127.0.0.1'`, which is bypassable via the spoofing issue above (if the fronting proxy passes `REMOTE_ADDR` from `X-Forwarded-For`) — and the spoofed-debug output also reveals the white-page/offer logic to any reviewer or competitor probing the site.
+The legacy query-string diagnostic mode dumped the full detection result and
+link row. The production-hardening pass removed that public mode entirely and
+replaced it with an authenticated CSRF-protected admin POST.
 
-**Fix:** Tie debug mode to an admin session or a secret parameter, not to the client IP.
+**Fix:** Remove public diagnostics and expose them only through an authenticated,
+CSRF-protected admin POST.
 
 ### 3.4 Predictable secrets in config
 **File:** `config.php:10-11`
@@ -255,11 +258,11 @@ Six separate COUNT queries where one grouped query would do. Fine at small scale
 | 3 | Remove bogus `sqlite:latest` service from docker-compose (2.3) |
 | 4 | Add CSRF tokens to all admin forms (3.1) |
 | 5 | Validate proxy headers / IP spoofing (3.2) |
-| 6 | Re-gate the `_debug` endpoint (3.3) |
+| 6 | Remove public `_debug` mode; use authenticated admin diagnostics (3.3) |
 | 7 | Validate slugs + `offer_url` in the API (3.6, 4.1) |
 | 8 | Replace predictable secrets; force password change (3.4, 5.3) |
 | 9 | Session cookie flags + lifetime (4.5) |
-| 10 | ip-api timeout + circuit breaker or local GeoIP DB (4.4) |
+| 10 | Authenticated HTTPS/local IP-intelligence adapter with explicit failure policy (4.4) |
 | 11 | Implement rate limiting on login (4.2) |
 | 12 | Memoize `detect()` (4.3); add indexes + log pruning (4.6) |
 | 13 | Implement or remove dead features: Tor check, meta refresh, rate-limit constants (5.1) |

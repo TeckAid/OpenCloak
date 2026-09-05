@@ -64,7 +64,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 $user = current_user();
 $baseUrl = app_base_url();
-$debugToken = defined('DEBUG_TOKEN') ? DEBUG_TOKEN : '';
 
 $activeNav = '/admin/settings.php';
 ?>
@@ -154,9 +153,8 @@ Authorization: Bearer {your_api_key}</pre>
                 </ol>
 
                 <h3>Testing</h3>
-                <p>Each link row in the Links page has a <strong>Test</strong> link that shows live
-                detection results. You can also append the debug token to any cloaked URL:</p>
-                <pre class="code-block"><?= htmlspecialchars($baseUrl) ?>/my-link?_debug=<?= htmlspecialchars($debugToken) ?></pre>
+                <p>Use the authenticated <strong>Diagnostics</strong> action on the Links page.
+                Diagnostics require your admin session and a one-time CSRF-protected POST.</p>
 
                 <h3>Custom White Pages</h3>
                 <p>You can set a custom white page HTML for each link, or use the default safe page.</p>

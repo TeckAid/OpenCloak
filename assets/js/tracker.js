@@ -22,12 +22,15 @@
         return Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
     }
 
-    function token() {
+    function token(storageKey) {
+        if (!/^cloak_vtoken_[a-f0-9]{16}$/.test(storageKey || '')) {
+            return '';
+        }
         try {
-            var t = localStorage.getItem('cloak_vtoken');
+            var t = localStorage.getItem(storageKey);
             if (t) return t;
             t = 'v' + randomToken();
-            localStorage.setItem('cloak_vtoken', t);
+            localStorage.setItem(storageKey, t);
             return t;
         } catch (e) {
             return '';
@@ -70,7 +73,7 @@
         var cfg = window.__CLOAK_CFG__ || {};
         var fp = collect();
         var payload = b64url(JSON.stringify(fp));
-        var visitor = token();
+        var visitor = token(cfg.visitorStorageKey || '');
         var target = cfg.redirect || window.location.pathname;
         var params = '_fph=' + encodeURIComponent(payload) + '&_fv=' + encodeURIComponent(visitor);
         window.location.replace(attachParams(target, params));

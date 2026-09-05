@@ -1,8 +1,8 @@
 <?php
 
-define('APP_RUNTIME_DIR', '/var/www/html/data');
-define('DB_PATH', '/var/www/html/data/cloaking.sqlite');
-define('LOG_PATH', '/var/www/html/logs/');
+define('APP_RUNTIME_DIR', '/srv/cloaking/runtime');
+define('DB_PATH', '/srv/cloaking/runtime/cloaking.sqlite');
+define('LOG_PATH', '/srv/cloaking/runtime/logs/');
 define('APP_BASE_URL', 'https://app.localhost');
 define('SYSTEM_HOSTS', [
     'app.localhost',

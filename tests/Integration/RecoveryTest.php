@@ -24,6 +24,12 @@ final class RecoveryTest extends TestCase
             $this->assertSame('https://app.example.test', $metadata['config']['app_base_url'] ?? null);
             $this->assertSame(['127.0.0.1', 'app.example.test'], $metadata['config']['system_hosts'] ?? null);
             $this->assertSame(['172.23.0.2/32'], $metadata['config']['trusted_proxies'] ?? null);
+            $this->assertSame(3, $metadata['migration_target'] ?? null);
+            $this->assertSame($this->currentSourceCommit(), $metadata['provenance']['source_commit'] ?? null);
+            $this->assertSame('sha256:' . str_repeat('b', 64), $metadata['provenance']['image_digest'] ?? null);
+            $this->assertTrue(preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', (string) ($metadata['created_at_utc'] ?? '')) === 1);
+            $this->assertTrue(preg_match('/^[a-f0-9]{64}$/', (string) ($metadata['manifest_hmac'] ?? '')) === 1);
+            $this->assertSame(hash_file('sha256', $fixture['dbPath']), $metadata['source']['database_files']['database']['sha256'] ?? null);
         } finally {
             $this->deleteTree($fixture['root']);
             $this->deleteTree($backupDir);
@@ -50,6 +56,28 @@ final class RecoveryTest extends TestCase
                 hash_file('sha256', $fixture['appKeyPath']),
                 $metadata['artifacts']['app_key']['sha256'] ?? null
             );
+        } finally {
+            $this->deleteTree($fixture['root']);
+            $this->deleteTree($backupDir);
+        }
+    }
+
+    public function test_backup_script_enforces_private_directory_and_secret_file_modes(): void
+    {
+        $fixture = $this->createRecoveryFixture();
+        $backupDir = $this->tempDir('cloaking-backup-modes-');
+        chmod($backupDir, 0755);
+
+        try {
+            $result = $this->runBackupCommand($fixture, $backupDir);
+            $this->assertSame(0, $result['exit'], $result['stderr'] . $result['stdout']);
+            clearstatcache(true, $backupDir);
+            $this->assertSame('0700', substr(sprintf('%o', fileperms($backupDir)), -4));
+            foreach (['cloaking.sqlite', 'app.key', 'config.local.php', 'backup-metadata.json', 'SHA256SUMS'] as $file) {
+                $path = $backupDir . DIRECTORY_SEPARATOR . $file;
+                clearstatcache(true, $path);
+                $this->assertSame('0600', substr(sprintf('%o', fileperms($path)), -4), "Unsafe mode for {$file}");
+            }
         } finally {
             $this->deleteTree($fixture['root']);
             $this->deleteTree($backupDir);
@@ -188,9 +216,66 @@ PHP,
             $this->assertSame(0, $summary['migration_exit'] ?? null);
             $this->assertTrue(is_numeric($summary['rpo_seconds'] ?? null), 'RPO should be recorded in the rehearsal summary.');
             $this->assertTrue(is_numeric($summary['rto_seconds'] ?? null), 'RTO should be recorded in the rehearsal summary.');
-            $this->assertSame(200, $smoke['login']['status'] ?? null);
+            $this->assertSame(302, $smoke['login']['status'] ?? null);
+            $this->assertSame(200, $smoke['dashboard']['status'] ?? null);
             $this->assertSame(401, $smoke['api']['status'] ?? null);
             $this->assertSame(302, $smoke['link']['status'] ?? null);
+            $this->assertSame(1, $smoke['logical_data']['admin_users'] ?? null);
+            $this->assertSame(1, $smoke['logical_data']['active_links'] ?? null);
+            $this->assertSame($this->currentSourceCommit(), $summary['provenance']['source_commit'] ?? null);
+            $this->assertSame('sha256:' . str_repeat('b', 64), $summary['provenance']['image_digest'] ?? null);
+        } finally {
+            $this->deleteTree($fixture['root']);
+            $this->deleteTree($backupDir);
+            $this->deleteTree($evidenceDir);
+        }
+    }
+
+    public function test_restore_rehearsal_migrates_a_verified_legacy_backup(): void
+    {
+        $fixture = $this->createRecoveryFixture(true);
+        $backupDir = $this->tempDir('cloaking-backup-legacy-');
+        $evidenceDir = $this->tempDir('cloaking-evidence-legacy-');
+
+        try {
+            $backup = $this->runBackupCommand($fixture, $backupDir);
+            $this->assertSame(0, $backup['exit'], $backup['stderr'] . $backup['stdout']);
+
+            $restore = $this->runRestoreCommand($backupDir, $evidenceDir);
+
+            $this->assertSame(0, $restore['exit'], $restore['stderr'] . $restore['stdout']);
+            $this->assertTrue(str_contains(
+                (string) file_get_contents($evidenceDir . '/migration.stdout.log'),
+                'Applied schema version 3 (1,2,3).'
+            ));
+            $smoke = $this->readJsonFile($evidenceDir . '/smoke-results.json');
+            $this->assertSame(302, $smoke['login']['status'] ?? null);
+            $this->assertSame(200, $smoke['dashboard']['status'] ?? null);
+            $this->assertSame(1, $smoke['logical_data']['active_links'] ?? null);
+        } finally {
+            $this->deleteTree($fixture['root']);
+            $this->deleteTree($backupDir);
+            $this->deleteTree($evidenceDir);
+        }
+    }
+
+    public function test_restore_rehearsal_rejects_logically_empty_database(): void
+    {
+        $fixture = $this->createRecoveryFixture();
+        $backupDir = $this->tempDir('cloaking-backup-empty-');
+        $evidenceDir = $this->tempDir('cloaking-evidence-empty-');
+
+        try {
+            $db = new PDO('sqlite:' . $fixture['dbPath']);
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+            $db->exec('DELETE FROM links; DELETE FROM users');
+
+            $backup = $this->runBackupCommand($fixture, $backupDir);
+            $this->assertSame(0, $backup['exit'], $backup['stderr'] . $backup['stdout']);
+            $restore = $this->runRestoreCommand($backupDir, $evidenceDir);
+
+            $this->assertSame(1, $restore['exit']);
+            $this->assertTrue(str_contains($restore['stderr'] . $restore['stdout'], 'logical recovery'));
         } finally {
             $this->deleteTree($fixture['root']);
             $this->deleteTree($backupDir);
@@ -201,7 +286,7 @@ PHP,
     /**
      * @return array{root:string,runtimeDir:string,logsDir:string,dbPath:string,appKeyPath:string,configPath:string}
      */
-    private function createRecoveryFixture(): array
+    private function createRecoveryFixture(bool $legacy = false): array
     {
         $root = $this->tempDir('cloaking-recovery-');
         $runtimeDir = $root . DIRECTORY_SEPARATOR . 'runtime';
@@ -231,7 +316,19 @@ PHP;
         ));
 
         $setupScript = $root . DIRECTORY_SEPARATOR . 'setup-recovery-fixture.php';
-        $script = <<<'PHP'
+        $script = $legacy ? <<<'PHP'
+<?php
+define('DB_PATH', %s);
+require %s;
+$db = new PDO('sqlite:' . DB_PATH);
+database_configure_connection($db);
+$db->exec((string) file_get_contents(%s));
+$db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+    ->execute([1, 'owner', %s, 'recovery-admin-api-key']);
+$db->prepare('INSERT INTO links (user_id, slug, name, offer_url) VALUES (?, ?, ?, ?)')
+    ->execute([1, 'promo', 'Promo', 'https://offers.example/promo']);
+PHP
+            : <<<'PHP'
 <?php
 define('DB_PATH', %s);
 require %s;
@@ -243,12 +340,15 @@ $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_pa
 $db->prepare('INSERT INTO links (user_id, slug, name, offer_url) VALUES (?, ?, ?, ?)')
     ->execute([1, 'promo', 'Promo', 'https://offers.example/promo']);
 PHP;
-        file_put_contents($setupScript, sprintf(
-            $script,
+        $arguments = [
             var_export($dbPath, true),
             var_export(APP_ROOT . '/includes/database.php', true),
-            var_export(password_hash('StrongPass123!', PASSWORD_DEFAULT), true)
-        ));
+        ];
+        if ($legacy) {
+            $arguments[] = var_export(APP_ROOT . '/migrations/001_initial_schema.sql', true);
+        }
+        $arguments[] = var_export(password_hash('StrongPass123!', PASSWORD_DEFAULT), true);
+        file_put_contents($setupScript, vsprintf($script, $arguments));
 
         $result = $this->runProcess([PHP_BINARY, $setupScript], APP_ROOT);
         if ($result['exit'] !== 0) {
@@ -278,6 +378,9 @@ PHP;
             '--db=' . $fixture['dbPath'],
             '--app-key=' . $fixture['appKeyPath'],
             '--output=' . $backupDir,
+            '--migration-target=3',
+            '--source-commit=' . $this->currentSourceCommit(),
+            '--image-digest=sha256:' . str_repeat('b', 64),
         ];
 
         if ($includeConfig) {
@@ -298,7 +401,11 @@ PHP;
             '--app-root=' . APP_ROOT,
             '--backup=' . $backupDir,
             '--evidence-dir=' . $evidenceDir,
-        ], APP_ROOT);
+            '--admin-username=owner',
+            '--admin-password-stdin',
+            '--expected-source-commit=' . $this->currentSourceCommit(),
+            '--expected-image-digest=sha256:' . str_repeat('b', 64),
+        ], APP_ROOT, "StrongPass123!\n");
     }
 
     private function rewriteChecksums(string $backupDir): void
@@ -312,11 +419,21 @@ PHP;
         file_put_contents($backupDir . '/SHA256SUMS', implode(PHP_EOL, $lines) . PHP_EOL);
     }
 
+    private function currentSourceCommit(): string
+    {
+        $result = $this->runProcess(['git', 'rev-parse', 'HEAD'], APP_ROOT);
+        if ($result['exit'] !== 0 || preg_match('/^[a-f0-9]{40}$/', trim($result['stdout'])) !== 1) {
+            throw new RuntimeException('Unable to resolve recovery test source commit.');
+        }
+
+        return trim($result['stdout']);
+    }
+
     /**
      * @param list<string> $command
      * @return array{exit:int,stdout:string,stderr:string}
      */
-    private function runProcess(array $command, string $cwd): array
+    private function runProcess(array $command, string $cwd, string $stdin = ''): array
     {
         $descriptorSpec = [
             0 => ['pipe', 'r'],
@@ -329,6 +446,9 @@ PHP;
             throw new RuntimeException('Unable to start recovery command.');
         }
 
+        if ($stdin !== '') {
+            fwrite($pipes[0], $stdin);
+        }
         fclose($pipes[0]);
         $stdout = stream_get_contents($pipes[1]);
         fclose($pipes[1]);

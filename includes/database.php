@@ -41,7 +41,7 @@ function initDatabase(): PDO
 function setupDatabase(): PDO
 {
     $db = getDB();
-    migrate($db);
+    migrate($db, false);
     verifyDatabaseSchema($db);
 
     return $db;
@@ -114,9 +114,15 @@ function verifyDatabaseSchema(PDO $db): void
 /**
  * Schema migrations for databases created by earlier versions.
  */
-function migrate(PDO $db): void
+function migrate(PDO $db, bool $destructiveBackupVerified = false): void
 {
     $migrations = get_database_migrations();
+
+    if (database_destructive_migration_pending($db) && !$destructiveBackupVerified) {
+        throw new RuntimeException(
+            'Migration 002 is destructive and requires a verified backup manifest bound to this database and app key.'
+        );
+    }
 
     $db->exec('BEGIN IMMEDIATE');
 
@@ -143,6 +149,16 @@ function migrate(PDO $db): void
         }
         throw $e;
     }
+}
+
+function database_destructive_migration_pending(PDO $db): bool
+{
+    $presentTables = database_list_tables($db);
+    if (array_values(array_intersect(database_required_tables(), $presentTables)) === []) {
+        return false;
+    }
+
+    return !in_array(2, database_get_applied_migration_versions($db), true);
 }
 
 function rollbackDatabaseToVersion(PDO $db, int $toVersion): void
@@ -650,6 +666,73 @@ function maintenance_tick(PDO $db): void
     }
 }
 
+/**
+ * Persist one decision and its aggregate counters as a single SQLite unit.
+ * A missing aggregate row or any write failure rolls the complete hit back.
+ *
+ * @param array<string, mixed> $hit
+ */
+function record_hit(PDO $db, array $hit, bool $showOffer): void
+{
+    $linkId = isset($hit['link_id']) ? (int) $hit['link_id'] : null;
+    $campaignId = isset($hit['campaign_id']) ? (int) $hit['campaign_id'] : null;
+    if ($linkId === null && $campaignId === null) {
+        throw new InvalidArgumentException('A hit must be bound to a link or campaign.');
+    }
+
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $db->prepare("
+            INSERT INTO hit_log (link_id, campaign_id, host, ip, user_agent, referer, language, country,
+                                 device_type, os_name, os_version, client_type, source,
+                                 is_bot, is_vpn, is_datacenter, shown_page, reject_reason)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ")->execute([
+            $linkId,
+            $campaignId,
+            (string) ($hit['host'] ?? ''),
+            (string) ($hit['ip'] ?? ''),
+            (string) ($hit['user_agent'] ?? ''),
+            (string) ($hit['referer'] ?? ''),
+            (string) ($hit['language'] ?? ''),
+            (string) ($hit['country'] ?? ''),
+            (string) ($hit['device_type'] ?? ''),
+            (string) ($hit['os_name'] ?? ''),
+            (string) ($hit['os_version'] ?? ''),
+            (string) ($hit['client_type'] ?? ''),
+            (string) ($hit['source'] ?? ''),
+            !empty($hit['is_bot']) ? 1 : 0,
+            !empty($hit['is_vpn']) ? 1 : 0,
+            !empty($hit['is_datacenter']) ? 1 : 0,
+            $showOffer ? 'offer' : 'white',
+            $showOffer ? null : ($hit['reject_reason'] ?? null),
+        ]);
+
+        $counter = $showOffer ? 'offer_shows' : 'white_shows';
+        if ($linkId !== null) {
+            $update = $db->prepare("UPDATE links SET total_hits = total_hits + 1, {$counter} = {$counter} + 1 WHERE id = ?");
+            $update->execute([$linkId]);
+            if ($update->rowCount() !== 1) {
+                throw new RuntimeException('Unable to update link hit counters.');
+            }
+        }
+        if ($campaignId !== null) {
+            $update = $db->prepare("UPDATE campaigns SET total_hits = total_hits + 1, {$counter} = {$counter} + 1 WHERE id = ?");
+            $update->execute([$campaignId]);
+            if ($update->rowCount() !== 1) {
+                throw new RuntimeException('Unable to update campaign hit counters.');
+            }
+        }
+
+        $db->commit();
+    } catch (Throwable $e) {
+        if ($db->inTransaction()) {
+            $db->rollBack();
+        }
+        throw $e;
+    }
+}
+
 function client_credential_hash(string $token): string
 {
     $secret = defined('APP_KEY') ? (string) APP_KEY : 'test-app-key';
@@ -737,6 +820,38 @@ function credential_allows_campaign(array|false $credential, int $campaignId): b
 function visitor_scope_key(string $kind, int $id): string
 {
     return $kind . ':' . $id;
+}
+
+function visitor_cookie_name(string $scope): string
+{
+    return 'cvk_' . substr(hash('sha256', $scope), 0, 16);
+}
+
+function visitor_storage_key(string $scope): string
+{
+    return 'cloak_vtoken_' . substr(hash('sha256', $scope), 0, 16);
+}
+
+/**
+ * @return array{name:string,value:string,options:array<string,mixed>}|false
+ */
+function visitor_cookie_issue(string $scope, string $visitorToken, bool $isHttps, bool $allowed = true): array|false
+{
+    if (!$allowed || !$isHttps || $visitorToken === '') {
+        return false;
+    }
+
+    return [
+        'name' => visitor_cookie_name($scope),
+        'value' => sign_visitor_token($scope, $visitorToken),
+        'options' => [
+            'expires' => time() + 86400 * 365,
+            'path' => '/',
+            'secure' => true,
+            'httponly' => true,
+            'samesite' => 'Lax',
+        ],
+    ];
 }
 
 function sign_visitor_token(string $scope, string $visitorToken): string

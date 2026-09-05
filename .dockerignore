@@ -6,8 +6,14 @@
 # Local configuration and runtime state
 config.local.php
 cloaking-runtime/
+runtime/
 data/
 logs/
+**/app.key
+**/*.sqlite
+**/*.sqlite-wal
+**/*.sqlite-shm
+ops/rehearsals/**/backup-artifacts/
 
 # Local-only tests and documents
 tests/**

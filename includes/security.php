@@ -327,6 +327,108 @@ function is_valid_offer_url(string $url): bool
     return true;
 }
 
+/**
+ * Fetch normalized IP intelligence over an authenticated TLS transport.
+ * The optional transport seam is used by deterministic tests and private
+ * adapters; it receives the configured endpoint and request options.
+ *
+ * @return array{ip:string,asn:string,country_code:string,is_proxy:bool,is_hosting:bool}|null
+ */
+function app_fetch_ip_intelligence(string $ip, ?callable $transport = null): ?array
+{
+    $normalizedIp = app_normalize_ip($ip);
+    $endpoint = defined('IP_INTELLIGENCE_ENDPOINT') ? trim((string) IP_INTELLIGENCE_ENDPOINT) : '';
+    $apiKey = defined('IP_INTELLIGENCE_API_KEY') ? trim((string) IP_INTELLIGENCE_API_KEY) : '';
+    if ($normalizedIp === null || $endpoint === '' || $apiKey === '' || preg_match('/[\r\n]/', $apiKey)) {
+        return null;
+    }
+
+    $endpointParts = parse_url($endpoint);
+    if ($endpointParts === false
+        || strtolower((string) ($endpointParts['scheme'] ?? '')) !== 'https'
+        || app_normalize_host((string) ($endpointParts['host'] ?? '')) === null
+        || isset($endpointParts['user'])
+        || isset($endpointParts['pass'])) {
+        return null;
+    }
+
+    $body = json_encode(['ip' => $normalizedIp], JSON_UNESCAPED_SLASHES);
+    if (!is_string($body)) {
+        return null;
+    }
+    $options = [
+        'method' => 'POST',
+        'headers' => "Accept: application/json\r\nContent-Type: application/json\r\nAuthorization: Bearer {$apiKey}\r\n",
+        'body' => $body,
+        'timeout' => 2.0,
+        'verify_peer' => true,
+        'verify_peer_name' => true,
+    ];
+
+    if ($transport === null) {
+        $transport = static function (string $url, array $request): string|false {
+            $context = stream_context_create([
+                'http' => [
+                    'method' => $request['method'],
+                    'header' => $request['headers'],
+                    'content' => $request['body'],
+                    'timeout' => $request['timeout'],
+                    'ignore_errors' => true,
+                    'follow_location' => 0,
+                    'max_redirects' => 0,
+                ],
+                'ssl' => [
+                    'verify_peer' => $request['verify_peer'],
+                    'verify_peer_name' => $request['verify_peer_name'],
+                    'allow_self_signed' => false,
+                ],
+            ]);
+
+            $response = file_get_contents($url, false, $context);
+            $status = 0;
+            foreach ($http_response_header ?? [] as $line) {
+                if (preg_match('/^HTTP\/\S+\s+(\d{3})/', $line, $matches) === 1) {
+                    $status = (int) $matches[1];
+                }
+            }
+
+            return $status >= 200 && $status < 300 ? $response : false;
+        };
+    }
+
+    try {
+        $response = $transport($endpoint, $options);
+    } catch (Throwable) {
+        return null;
+    }
+    if (!is_string($response) || $response === '' || strlen($response) > 65536) {
+        return null;
+    }
+
+    $decoded = json_decode($response, true);
+    if (!is_array($decoded) || app_normalize_ip((string) ($decoded['ip'] ?? '')) !== $normalizedIp) {
+        return null;
+    }
+    $asn = strtoupper(trim((string) ($decoded['asn'] ?? '')));
+    if (preg_match('/^AS\d{1,10}$/', $asn) !== 1) {
+        return null;
+    }
+    $countryCode = strtoupper(trim((string) ($decoded['country_code'] ?? '')));
+    if (preg_match('/^[A-Z]{2}$/', $countryCode) !== 1
+        || !is_bool($decoded['is_proxy'] ?? null)
+        || !is_bool($decoded['is_hosting'] ?? null)) {
+        return null;
+    }
+
+    return [
+        'ip' => $normalizedIp,
+        'asn' => $asn,
+        'country_code' => $countryCode,
+        'is_proxy' => $decoded['is_proxy'],
+        'is_hosting' => $decoded['is_hosting'],
+    ];
+}
+
 // ---- CSRF -------------------------------------------------------------------
 
 function csrf_token(): string

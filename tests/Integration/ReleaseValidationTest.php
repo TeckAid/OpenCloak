@@ -113,6 +113,43 @@ final class ReleaseValidationTest extends TestCase
         }
     }
 
+    public function test_release_validator_rejects_noncanonical_attestation_and_metadata_timestamps(): void
+    {
+        $fixture = $this->createReleaseFixture();
+
+        try {
+            $release = $this->prepareApprovedTaggedRelease($fixture);
+            $image = [
+                'ref' => 'ghcr.io/example/cloaking:v1.2.3@sha256:' . str_repeat('a', 64),
+                'digest' => 'sha256:' . str_repeat('a', 64),
+            ];
+            $this->writeMetadata($fixture, $release['tag'], $release['commit'], $image);
+            $metadata = json_decode((string) file_get_contents($fixture['metadataPath']), true);
+            $metadata['created_at'] = '2026-09-04 20:00:00';
+            file_put_contents($fixture['metadataPath'], json_encode($metadata, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL);
+
+            $badMetadata = $this->runValidator($fixture, [
+                '--phase=published',
+                '--legal-approval-attestation=' . $release['attestation'],
+            ]);
+            $this->assertSame(1, $badMetadata['exit']);
+            $this->assertTrue(str_contains($badMetadata['stderr'] . $badMetadata['stdout'], 'canonical UTC'));
+
+            $badAttestation = json_decode($release['attestation'], true);
+            $badAttestation['issued_at'] = '2026-09-04T15:00:00-05:00';
+            $badAttestationJson = json_encode($badAttestation, JSON_UNESCAPED_SLASHES) ?: '';
+            $this->writeMetadata($fixture, $release['tag'], $release['commit'], $image);
+            $attestationResult = $this->runValidator($fixture, [
+                '--phase=published',
+                '--legal-approval-attestation=' . $badAttestationJson,
+            ]);
+            $this->assertSame(1, $attestationResult['exit']);
+            $this->assertTrue(str_contains($attestationResult['stderr'] . $attestationResult['stdout'], 'canonical UTC'));
+        } finally {
+            $this->deleteTree($fixture['root']);
+        }
+    }
+
     public function test_release_validator_rejects_missing_digest_metadata(): void
     {
         $fixture = $this->createReleaseFixture();
@@ -321,6 +358,7 @@ MD
     {
         file_put_contents($fixture['sbomPath'], "{\"spdxVersion\":\"SPDX-2.3\"}\n");
         file_put_contents($fixture['metadataPath'], json_encode([
+            'created_at' => '2026-09-04T20:00:00Z',
             'git' => [
                 'tag' => $tag,
                 'commit' => $commit,

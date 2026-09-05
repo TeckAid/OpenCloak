@@ -231,7 +231,7 @@ function validateLegalAttestation(array $review, string $legalReviewPath, array 
     }
 
     if (!isValidIsoTimestamp($attestation['issued_at'] ?? '')) {
-        $failures[] = 'LEGAL_APPROVAL_ATTESTATION must include an ISO-8601 issued_at timestamp.';
+        $failures[] = 'LEGAL_APPROVAL_ATTESTATION issued_at must use canonical UTC form YYYY-MM-DDTHH:MM:SSZ.';
     }
 
     if (($review['Decision'] ?? '') !== '' && strcasecmp($review['Decision'], $attestation['decision'] ?? '') !== 0) {
@@ -319,6 +319,11 @@ function validateMetadata(array $metadata, string $metadataPath, array &$failure
     $imageRef = getNestedString($metadata, ['image', 'ref']);
     $digest = getNestedString($metadata, ['image', 'digest']);
     $sbomPath = getNestedString($metadata, ['sbom', 'path']);
+    $createdAt = getNestedString($metadata, ['created_at']);
+
+    if (!isValidIsoTimestamp($createdAt)) {
+        $failures[] = 'Release metadata created_at must use canonical UTC form YYYY-MM-DDTHH:MM:SSZ.';
+    }
 
     if ($imageRef === '' || preg_match('/@sha256:[a-f0-9]{64}$/', $imageRef) !== 1) {
         $failures[] = 'Release metadata must reference the image by an immutable sha256 digest.';
@@ -368,17 +373,16 @@ function isPendingValue(string $value): bool
 
 function isValidIsoTimestamp(string $value): bool
 {
-    if ($value === '') {
+    if (preg_match('/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/', $value) !== 1) {
         return false;
     }
 
-    try {
-        new DateTimeImmutable($value);
-    } catch (Throwable) {
-        return false;
-    }
+    $parsed = DateTimeImmutable::createFromFormat('!Y-m-d\TH:i:s\Z', $value, new DateTimeZone('UTC'));
+    $errors = DateTimeImmutable::getLastErrors();
 
-    return true;
+    return $parsed instanceof DateTimeImmutable
+        && ($errors === false || ($errors['warning_count'] === 0 && $errors['error_count'] === 0))
+        && $parsed->format('Y-m-d\TH:i:s\Z') === $value;
 }
 
 function isAbsolutePath(string $path): bool

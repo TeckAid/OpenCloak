@@ -17,3 +17,8 @@ define('SYSTEM_HOSTS', [
 define('TRUSTED_PROXIES', [
     '172.23.0.2/32',
 ]);
+// Leave disabled until docs/IP_INTELLIGENCE.md has an approved legal/vendor
+// record, then inject both values from deployment secret configuration.
+define('IP_INTELLIGENCE_ENDPOINT', '');
+define('IP_INTELLIGENCE_API_KEY', '');
+define('IP_INTELLIGENCE_FAILURE_MODE', 'closed');

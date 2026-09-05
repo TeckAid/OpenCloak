@@ -1,6 +1,8 @@
 # Implementation Plan — Production-Ready Cloaking SaaS
 
-Maps every finding from `CODE_REVIEW.md` to a concrete change, organized in five phases.
+Historical plan, superseded by the approved production-hardening design and
+plan under `docs/superpowers/`. The security rows below reflect the final
+hardening pass where later review changed the original approach.
 
 ---
 
@@ -10,8 +12,8 @@ Maps every finding from `CODE_REVIEW.md` to a concrete change, organized in five
 |---|---|---|---|
 | 1 | 3.1 No CSRF protection | Add `csrf_token()` / `csrf_field()` / `csrf_verify()` helpers; embed token in all admin POST forms; convert logout to POST | `includes/security.php`, all `admin/*.php` |
 | 2 | 3.2 Spoofable client IP | Only honor `X-Forwarded-For`/`CF-Connecting-IP` when `REMOTE_ADDR` is in an explicit `TRUSTED_PROXIES` list; walk XFF right-to-left | `includes/bot_detector.php`, `config.php` |
-| 3 | 3.3 Debug endpoint leaks internals | Gate `?_debug` behind a random per-install `DEBUG_TOKEN` derived from `APP_KEY`, verified with `hash_equals` | `index.php`, `config.php`, `admin/settings.php` |
-| 4 | 3.4 Predictable secrets | Generate random `data/app.key` on first run; derive `ADMIN_SECRET_KEY`, `JWT_SECRET`, `DEBUG_TOKEN` via `hash_hmac`; support `config.local.php` overrides | `config.php`, `config.local.example.php` |
+| 3 | 3.3 Debug endpoint leaks internals | Remove public query-string diagnostics; expose diagnostics only as authenticated CSRF-protected admin POST | `admin/diagnostics.php`, `index.php`, `admin/links.php` |
+| 4 | 3.4 Predictable secrets | Generate `app.key` atomically with mode 0600 outside the docroot; fail closed on persistence errors | `config.php`, `config.local.example.php` |
 | 5 | 3.5 SQL interpolation | Convert all dashboard queries to prepared statements | `admin/dashboard.php` |
 | 6 | 3.6 Stored XSS via API slug | Validate slug with same regex as web form + reserved-word blocklist in API | `api/index.php` |
 | 7 | 4.1 Header injection | Validate `offer_url` (valid URL, http/https, no CR/LF) on create/update; sanitize before `header()` | `api/index.php`, `admin/links.php`, `index.php` |
@@ -40,7 +42,7 @@ Maps every finding from `CODE_REVIEW.md` to a concrete change, organized in five
 | 20 | 4.6 No indexes | `CREATE INDEX IF NOT EXISTS` on `hit_log(link_id, created_at)`, `hit_log(created_at)`, `links(user_id)` | `includes/database.php` |
 | 21 | 4.6 Unbounded logs | Probabilistic pruning (1% of requests) honoring `LOG_RETENTION_DAYS`; prune stale rate-limit rows | `includes/database.php`, `index.php` |
 | 22 | 4.3 Double detect() | Memoize detection result in `BotDetector`; single call per request | `includes/bot_detector.php`, `index.php` |
-| 23 | 4.4 ip-api hangs/fail-open | 1.5s stream timeout, error cache, circuit breaker (5 failures → 5 min cooldown) | `includes/bot_detector.php` |
+| 23 | 4.4 Untrusted IP intelligence | Authenticated HTTPS/local adapter, strict response binding, explicit fail-closed default, and reviewed data-processing scope | `includes/security.php`, `includes/bot_detector.php`, `docs/IP_INTELLIGENCE.md` |
 | 24 | — | SQLite `busy_timeout=5000`, `synchronous=NORMAL` with WAL | `includes/database.php` |
 | 25 | — | Opcache + production `php.ini` in Docker image; asset caching headers | `docker/php.ini`, `Dockerfile`, `.htaccess` |
 | 26 | — | No session started on public cloaked requests (session only in admin) | `includes/bootstrap.php` |
@@ -63,7 +65,7 @@ Maps every finding from `CODE_REVIEW.md` to a concrete change, organized in five
 | 33 | — | `install.php` CLI: create admin user with custom password, print security checklist | `install.php` |
 | 34 | — | `dev-router.php` for `php -S` local dev | `dev-router.php` |
 | 35 | 5.10 Docker hygiene | `.dockerignore`, correct permissions, production php.ini, AllowOverride fix | `.dockerignore`, `Dockerfile` |
-| 36 | — | Rewrite README: new setup flow, forced password change, debug-token testing, security checklist | `README.md` |
+| 36 | — | Rewrite README: installer-only first account, authenticated diagnostics, recovery workflow, security checklist | `README.md` |
 
 ## Verification
 
@@ -71,10 +73,10 @@ Maps every finding from `CODE_REVIEW.md` to a concrete change, organized in five
 2. End-to-end smoke test in a temp copy of the project using PHP built-in server:
    - `/` → 404; unknown slug → 404 + safe page
    - `/admin/login.php` → 200, contains CSRF field, no default-cred footer
-   - Login POST with CSRF (admin/admin) → redirects; forced password change redirect on first login
+   - Installer-created administrator login POST with CSRF → redirects
    - `/api/links` with header auth → create link (valid + invalid slug/URL rejected)
    - Slug hit with curl UA → white page; with browser UA → 302 offer
-   - `?_debug=<token>` → JSON; wrong token → white/offer normal path
+   - authenticated diagnostics GET → 405; CSRF-protected POST → JSON
    - `/data/cloaking.db` → denied (Apache-specific, noted in docs)
 3. `docker compose config` validation.
 
@@ -86,8 +88,8 @@ Maps every finding from `CODE_REVIEW.md` to a concrete change, organized in five
 |---|---|---|---|
 | 1 | CSRF on all admin forms + POST logout | ✅ | 403 on token-less POST |
 | 2 | Proxy-safe client IP (TRUSTED_PROXIES) | ✅ | code review + unit path |
-| 3 | DEBUG_TOKEN-gated debug mode | ✅ | valid token → JSON; wrong token → normal flow |
-| 4 | Random `data/app.key` secrets + config.local.php | ✅ | key auto-generated on first run |
+| 3 | Authenticated diagnostics | ✅ | public diagnostic query inert; admin GET 405; protected POST succeeds |
+| 4 | Random runtime `app.key` secrets + config.local.php | ✅ | key generated atomically with mode 0600 or startup fails closed |
 | 5 | Dashboard prepared statements | ✅ | lint + runtime |
 | 6 | API slug validation + reserved words | ✅ | XSS slug & `admin` slug → 400 |
 | 7 | offer_url validation (no CR/LF, http/https) | ✅ | `javascript:` URL → 400 |
@@ -106,7 +108,7 @@ Maps every finding from `CODE_REVIEW.md` to a concrete change, organized in five
 | 20 | Indexes on `hit_log` and `links` | ✅ | schema + runtime |
 | 21 | Probabilistic log pruning + rate-limit cleanup | ✅ | `maintenance_tick()` |
 | 22 | Memoized detection (single run/request) | ✅ | `getResult()` reused |
-| 23 | ip-api timeout + circuit breaker | ✅ | 1.5s timeout, 5-fail cooldown |
+| 23 | Authenticated IP intelligence | ✅ | HTTPS bearer transport, subject binding, explicit unavailable result |
 | 24 | SQLite `busy_timeout`, `synchronous=NORMAL` | ✅ | PRAGMAs set |
 | 25 | Opcache + prod php.ini + asset caching | ✅ | `docker/php.ini`, `mod_expires` |
 | 26 | No session on public cloaked requests | ✅ | `boot_app(false)` |
@@ -125,7 +127,7 @@ Maps every finding from `CODE_REVIEW.md` to a concrete change, organized in five
 
 - Root/unknown slug → `404`; login page → `200` with `_csrf` field and no default-cred footer
 - Security headers present: `X-Content-Type-Options`, `X-Frame-Options: SAMEORIGIN`, `Referrer-Policy`, CSP on admin
-- Login `admin/admin` → 302 → dashboard → forced 302 → `settings.php?force=1` with banner
+- Installer-created administrator login → 302 → dashboard
 - Password change → `must_change_password=0`, dashboard 200 afterwards
 - API: no auth → 401; query-string key → 401; create → 201; XSS slug/reserved slug/bad URL → 400
 - Cloaking: curl UA → white page; Googlebot → white page; HeadlessChrome → white page;

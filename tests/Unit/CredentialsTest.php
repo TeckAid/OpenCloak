@@ -88,6 +88,28 @@ final class CredentialsTest extends TestCase
         $this->assertSame(false, verify_visitor_token($token . 'x', 'campaign:10'));
     }
 
+    public function test_visitor_cookie_policy_is_https_only_and_scope_specific(): void
+    {
+        $campaignScope = visitor_scope_key('campaign', 10);
+        $otherCampaignScope = visitor_scope_key('campaign', 11);
+        $linkScope = visitor_scope_key('link', 10);
+
+        $this->assertFalse(visitor_cookie_issue($campaignScope, 'visitor-123', false));
+        $this->assertFalse(visitor_cookie_issue($campaignScope, 'visitor-123', true, false));
+
+        $issue = visitor_cookie_issue($campaignScope, 'visitor-123', true);
+        $this->assertTrue(is_array($issue));
+        $this->assertTrue(($issue['options']['secure'] ?? false) === true);
+        $this->assertTrue(($issue['options']['httponly'] ?? false) === true);
+        $this->assertSame('Lax', $issue['options']['samesite'] ?? null);
+        $this->assertSame(visitor_cookie_name($campaignScope), $issue['name'] ?? null);
+        $this->assertFalse(visitor_cookie_name($campaignScope) === visitor_cookie_name($otherCampaignScope));
+        $this->assertFalse(visitor_cookie_name($campaignScope) === visitor_cookie_name($linkScope));
+        $this->assertFalse(visitor_storage_key($campaignScope) === visitor_storage_key($otherCampaignScope));
+        $this->assertFalse(visitor_storage_key($campaignScope) === visitor_storage_key($linkScope));
+        $this->assertSame('visitor-123', verify_visitor_token((string) ($issue['value'] ?? ''), $campaignScope));
+    }
+
     private function seedCampaignOwner(PDO $db, int $userId, int $campaignId): void
     {
         $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')

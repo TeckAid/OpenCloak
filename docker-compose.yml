@@ -10,11 +10,8 @@ services:
       - "80"
     volumes:
       - type: bind
-        source: ./data
-        target: /var/www/html/data
-      - type: bind
-        source: ./logs
-        target: /var/www/html/logs
+        source: ${CLOAKING_RUNTIME_PATH:-./runtime}
+        target: /srv/cloaking/runtime
       - type: bind
         source: ${CLOAKING_CONFIG_PATH:-./docker/config.local.php}
         target: /var/www/html/config.local.php

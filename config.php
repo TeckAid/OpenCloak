@@ -23,20 +23,99 @@ if (!defined('DB_PATH')) {
 }
 
 // ---- Application key (random, generated on first run) ----------------------
-if (!defined('APP_KEY')) {
-    $appKeyFile = APP_RUNTIME_DIR . '/app.key';
-    $appKey = null;
-    if (is_readable($appKeyFile)) {
-        $appKey = trim((string)file_get_contents($appKeyFile));
-    }
-    if (!$appKey || strlen($appKey) < 32) {
-        $appKey = bin2hex(random_bytes(32));
-        if (!is_dir(dirname($appKeyFile))) {
-            @mkdir(dirname($appKeyFile), 0755, true);
+if (!function_exists('app_load_or_create_key')) {
+    function app_load_or_create_key(string $runtimeDir): string
+    {
+        if (file_exists($runtimeDir) && !is_dir($runtimeDir)) {
+            throw new RuntimeException('Unable to persist application key: runtime path is not a directory.');
         }
-        @file_put_contents($appKeyFile, $appKey);
+        if (!is_dir($runtimeDir) && !mkdir($runtimeDir, 0700, true) && !is_dir($runtimeDir)) {
+            throw new RuntimeException('Unable to persist application key: runtime directory could not be created.');
+        }
+        if (!chmod($runtimeDir, 0700)) {
+            throw new RuntimeException('Unable to secure application key runtime directory.');
+        }
+
+        $keyPath = rtrim($runtimeDir, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'app.key';
+        if (is_link($keyPath) || (file_exists($keyPath) && !is_file($keyPath))) {
+            throw new RuntimeException('Unable to load application key: key path is not a regular file.');
+        }
+
+        $lockPath = $keyPath . '.lock';
+        $lock = fopen($lockPath, 'c');
+        if (!is_resource($lock)) {
+            throw new RuntimeException('Unable to persist application key: lock file could not be opened.');
+        }
+
+        try {
+            if (!chmod($lockPath, 0600) || !flock($lock, LOCK_EX)) {
+                throw new RuntimeException('Unable to persist application key: lock could not be secured.');
+            }
+
+            if (is_file($keyPath)) {
+                $key = trim((string) file_get_contents($keyPath));
+                if (!preg_match('/^[a-f0-9]{64}$/', $key)) {
+                    throw new RuntimeException('Unable to load application key: stored key is invalid.');
+                }
+                if (!chmod($keyPath, 0600) || (fileperms($keyPath) & 0777) !== 0600) {
+                    throw new RuntimeException('Unable to secure application key file permissions.');
+                }
+
+                return $key;
+            }
+
+            $key = bin2hex(random_bytes(32));
+            $temporaryPath = $runtimeDir . DIRECTORY_SEPARATOR . '.app.key.' . bin2hex(random_bytes(8)) . '.tmp';
+            $temporary = fopen($temporaryPath, 'x');
+            if (!is_resource($temporary)) {
+                throw new RuntimeException('Unable to persist application key: temporary file could not be created.');
+            }
+
+            $writeSucceeded = false;
+            try {
+                if (!chmod($temporaryPath, 0600)
+                    || fwrite($temporary, $key . PHP_EOL) !== strlen($key) + 1
+                    || !fflush($temporary)) {
+                    throw new RuntimeException('Unable to persist application key: atomic write failed.');
+                }
+                if (function_exists('fsync') && !fsync($temporary)) {
+                    throw new RuntimeException('Unable to persist application key: sync failed.');
+                }
+                $writeSucceeded = true;
+            } finally {
+                fclose($temporary);
+                if (!$writeSucceeded) {
+                    @unlink($temporaryPath);
+                }
+            }
+
+            if (!rename($temporaryPath, $keyPath)) {
+                @unlink($temporaryPath);
+                throw new RuntimeException('Unable to persist application key: atomic rename failed.');
+            }
+            if (!chmod($keyPath, 0600) || (fileperms($keyPath) & 0777) !== 0600) {
+                throw new RuntimeException('Unable to secure application key file permissions.');
+            }
+
+            return $key;
+        } finally {
+            flock($lock, LOCK_UN);
+            fclose($lock);
+        }
     }
-    define('APP_KEY', $appKey);
+}
+
+if (!defined('APP_KEY')) {
+    try {
+        define('APP_KEY', app_load_or_create_key(APP_RUNTIME_DIR));
+    } catch (Throwable $e) {
+        fwrite(STDERR, 'Fatal application key error: ' . $e->getMessage() . PHP_EOL);
+        exit(1);
+    }
+}
+if (preg_match('/^[a-f0-9]{64}$/', (string) APP_KEY) !== 1) {
+    fwrite(STDERR, "Fatal application key error: APP_KEY must be exactly 64 lowercase hexadecimal characters.\n");
+    exit(1);
 }
 
 // ---- Security ---------------------------------------------------------------
@@ -45,9 +124,6 @@ if (!defined('ADMIN_SECRET_KEY')) {
 }
 if (!defined('JWT_SECRET')) {
     define('JWT_SECRET', hash_hmac('sha256', 'jwt', APP_KEY));
-}
-if (!defined('DEBUG_TOKEN')) {
-    define('DEBUG_TOKEN', substr(hash_hmac('sha256', 'debug', APP_KEY), 0, 16));
 }
 if (!defined('SESSION_LIFETIME')) {
     define('SESSION_LIFETIME', 3600 * 8); // 8 hours
@@ -101,6 +177,15 @@ if (!defined('DEFAULT_WHITE_PAGE')) {
 // ---- Detection settings -----------------------------------------------------
 if (!defined('ENABLE_TOR_CHECK')) {
     define('ENABLE_TOR_CHECK', true);
+}
+if (!defined('IP_INTELLIGENCE_ENDPOINT')) {
+    define('IP_INTELLIGENCE_ENDPOINT', '');
+}
+if (!defined('IP_INTELLIGENCE_API_KEY')) {
+    define('IP_INTELLIGENCE_API_KEY', '');
+}
+if (!defined('IP_INTELLIGENCE_FAILURE_MODE')) {
+    define('IP_INTELLIGENCE_FAILURE_MODE', 'closed');
 }
 
 // ---- Rate limiting -----------------------------------------------------------

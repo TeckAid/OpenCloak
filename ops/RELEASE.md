@@ -21,7 +21,10 @@ bash ops/backup_sqlite.sh \
   --db=/srv/cloaking/runtime/cloaking.sqlite \
   --app-key=/srv/cloaking/runtime/app.key \
   --config=/srv/cloaking/config/config.local.php \
-  --output=/srv/cloaking/backups/$(date -u +%Y%m%dT%H%M%SZ)
+  --output=/srv/cloaking/backups/$(date -u +%Y%m%dT%H%M%SZ) \
+  --migration-target=3 \
+  --source-commit="$SOURCE_COMMIT" \
+  --image-digest="$IMAGE_DIGEST"
 ```
 
 Treat a backup as valid only when the command exits `0` and writes `cloaking.sqlite`, `app.key`, `config.local.php`, `backup-metadata.json`, and `SHA256SUMS`.
@@ -36,7 +39,11 @@ Before production rollout, rehearse the exact backup you plan to trust:
 mkdir -p ops/rehearsals/$(date -u +%Y%m%dT%H%M%SZ)
 bash ops/restore_rehearsal.sh \
   --backup=/srv/cloaking/backups/20260904T000000Z \
-  --evidence-dir=ops/rehearsals/20260904T000000Z
+  --evidence-dir=ops/rehearsals/20260904T000000Z \
+  --admin-username=owner \
+  --admin-password-stdin \
+  --expected-source-commit="$SOURCE_COMMIT" \
+  --expected-image-digest="$IMAGE_DIGEST" < /secure/admin-password
 ```
 
 Review:
@@ -62,8 +69,8 @@ bash ops/smoke_test.sh \
   --https-base-url=https://app.example.com \
   --http-base-url=http://app.example.com \
   --admin-username=owner \
-  --admin-password='replace-me' \
-  --restart-command='docker compose restart web edge'
+  --admin-password-stdin \
+  --restart-command='docker compose restart web edge' < /secure/admin-password
 ```
 
 The smoke script verifies:
@@ -103,7 +110,7 @@ record must keep the release blocked even if smoke passes.
 1. Confirm the legal/platform artifact, protected attestation, immutable tag inputs, and rollback evidence all exist for the exact source commit you intend to release, then run `php ops/validate_release_inputs.php --phase=prepublish ...`. If that gate fails, the release remains blocked.
 2. Pull the exact approved image digest.
 3. Start or refresh the private `web` container without publishing its port.
-4. Run `php bin/migrate.php --db=/srv/cloaking/runtime/cloaking.sqlite` inside the new container or a one-shot maintenance container attached to the same private volume.
+4. Run `php bin/migrate.php --db=/srv/cloaking/runtime/cloaking.sqlite --backup-manifest=/srv/cloaking/backups/<capture>/backup-metadata.json --app-key=/srv/cloaking/runtime/app.key` inside a one-shot maintenance container attached to the same private volume. The destructive migration gate rejects stale or mismatched manifests.
 5. Reload the TLS edge only after migrations succeed.
 6. Run `bash ops/smoke_test.sh ...` against the staged or freshly cut-over domain and keep its console transcript with the release ticket.
 7. Record the published digest, tag, commit, and SBOM metadata in the release artifacts, then run `php ops/validate_release_inputs.php --phase=published ...`.

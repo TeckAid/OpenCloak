@@ -39,6 +39,13 @@ define('TRUSTED_PROXIES', [
 // Disable the Tor exit-node DNSBL lookup if DNS is slow in your environment
 define('ENABLE_TOR_CHECK', true);
 
+// Optional IP-intelligence adapter. The endpoint must be HTTPS, accept an
+// authenticated JSON POST {"ip":"..."}, and return the documented normalized
+// schema. Network-sensitive rules fail closed when the adapter is unavailable.
+define('IP_INTELLIGENCE_ENDPOINT', 'https://intel.internal.example/v1/lookup');
+define('IP_INTELLIGENCE_API_KEY', 'replace-with-secret-from-your-vault');
+define('IP_INTELLIGENCE_FAILURE_MODE', 'closed'); // "closed" or explicit "open"
+
 // Login rate limit
 define('LOGIN_MAX_ATTEMPTS', 10);
 define('LOGIN_WINDOW_SECONDS', 300);

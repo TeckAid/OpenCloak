@@ -177,7 +177,11 @@ PHP,
         try {
             $this->createLegacyVersionOneDatabase($dbPath);
 
-            $result = $this->runMigrationCommand($dbPath);
+            $backup = $this->createMigrationBackup($runtime, $dbPath, 3);
+            $result = $this->runMigrationCommand($dbPath, [
+                '--backup-manifest=' . $backup['manifestPath'],
+                '--app-key=' . $backup['appKeyPath'],
+            ]);
             $this->assertSame(0, $result['exit'], $result['stderr']);
 
             $db = $this->openDatabase($dbPath);
@@ -331,35 +335,214 @@ PHP,
                 VALUES (31, 1, 'stats', 'Stats', 7, 8, 'https://offers.example/stats', '', 1)
             ")->execute();
 
-            $db->exec('BEGIN IMMEDIATE');
-            $db->prepare("
-                INSERT INTO hit_log (link_id, campaign_id, host, ip, user_agent, referer, language, country,
-                                     device_type, os_name, os_version, client_type, source,
-                                     is_bot, is_vpn, is_datacenter, shown_page, reject_reason)
-                VALUES (31, 7, 'go.example.com', '198.51.100.9', 'Mozilla/5.0', '', 'en-US', 'US',
-                        'mobile', 'iOS', '17.0', 'facebook', 'ads',
-                        0, 0, 0, 'offer', NULL)
-            ")->execute();
-            $db->prepare("UPDATE links SET total_hits = total_hits + 1, offer_shows = offer_shows + 1 WHERE id = 31")
-                ->execute();
-            $db->prepare("UPDATE campaigns SET total_hits = total_hits + 1, offer_shows = offer_shows + 1 WHERE id = 7")
-                ->execute();
-            $db->rollBack();
+            $db->exec("
+                CREATE TRIGGER fail_campaign_hit_update
+                BEFORE UPDATE OF total_hits ON campaigns
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected counter failure');
+                END
+            ");
+
+            $this->assertThrows(
+                static fn () => record_hit($db, [
+                    'link_id' => 31,
+                    'campaign_id' => 7,
+                    'host' => 'go.example.com',
+                    'ip' => '198.51.100.9',
+                    'user_agent' => 'Mozilla/5.0',
+                    'referer' => '',
+                    'language' => 'en-US',
+                    'country' => 'US',
+                    'device_type' => 'mobile',
+                    'os_name' => 'iOS',
+                    'os_version' => '17.0',
+                    'client_type' => 'facebook',
+                    'source' => 'ads',
+                    'is_bot' => 0,
+                    'is_vpn' => 0,
+                    'is_datacenter' => 0,
+                    'reject_reason' => null,
+                ], true),
+                PDOException::class,
+                'injected counter failure'
+            );
 
             $this->assertSame(0, (int) $db->query('SELECT COUNT(*) FROM hit_log WHERE link_id = 31')->fetchColumn());
             $this->assertSame(0, (int) $db->query('SELECT total_hits FROM links WHERE id = 31')->fetchColumn());
             $this->assertSame(0, (int) $db->query('SELECT offer_shows FROM campaigns WHERE id = 7')->fetchColumn());
+
+            $db->exec('DROP TRIGGER fail_campaign_hit_update');
+            $db->exec("
+                CREATE TRIGGER fail_client_campaign_hit_update
+                BEFORE UPDATE OF total_hits ON campaigns
+                BEGIN
+                    SELECT RAISE(ABORT, 'injected client counter failure');
+                END
+            ");
+
+            $this->assertThrows(
+                static fn () => record_hit($db, [
+                    'link_id' => null,
+                    'campaign_id' => 7,
+                    'host' => 'landing.example.com',
+                    'ip' => '198.51.100.10',
+                    'user_agent' => 'Mozilla/5.0',
+                    'referer' => '',
+                    'language' => 'en-US',
+                    'country' => 'US',
+                    'device_type' => 'desktop',
+                    'os_name' => '',
+                    'os_version' => '',
+                    'client_type' => '',
+                    'source' => 'direct',
+                    'is_bot' => 0,
+                    'is_vpn' => 0,
+                    'is_datacenter' => 0,
+                    'reject_reason' => 'policy',
+                ], false),
+                PDOException::class,
+                'injected client counter failure'
+            );
+            $this->assertSame(0, (int) $db->query('SELECT COUNT(*) FROM hit_log WHERE campaign_id = 7')->fetchColumn());
+            $this->assertSame(0, (int) $db->query('SELECT white_shows FROM campaigns WHERE id = 7')->fetchColumn());
         } finally {
             $this->deleteTree($runtime);
+        }
+    }
+
+    public function test_destructive_legacy_migration_requires_a_verified_backup_manifest(): void
+    {
+        $runtime = $this->createTempDir('cloaking-migrate-gate-');
+        $dbPath = $runtime . DIRECTORY_SEPARATOR . 'cloaking.sqlite';
+
+        try {
+            $this->createLegacyVersionOneDatabase($dbPath);
+
+            $missing = $this->runMigrationCommand($dbPath);
+            $this->assertSame(1, $missing['exit']);
+            $this->assertTrue(str_contains($missing['stderr'] . $missing['stdout'], 'verified backup manifest'));
+
+            $backup = $this->createMigrationBackup($runtime, $dbPath, 3);
+            $valid = $this->runMigrationCommand($dbPath, [
+                '--backup-manifest=' . $backup['manifestPath'],
+                '--app-key=' . $backup['appKeyPath'],
+            ]);
+
+            $this->assertSame(0, $valid['exit'], $valid['stderr'] . $valid['stdout']);
+        } finally {
+            $this->deleteTree($runtime);
+        }
+    }
+
+    public function test_migration_backup_gate_rejects_wrong_target_key_database_and_stale_manifest(): void
+    {
+        $root = $this->createTempDir('cloaking-migrate-bound-manifest-');
+
+        try {
+            foreach (['target', 'key', 'database', 'stale'] as $case) {
+                $runtime = $root . DIRECTORY_SEPARATOR . $case;
+                mkdir($runtime, 0700, true);
+                $dbPath = $runtime . DIRECTORY_SEPARATOR . 'cloaking.sqlite';
+                $this->createLegacyVersionOneDatabase($dbPath);
+                $backup = $this->createMigrationBackup($runtime, $dbPath, $case === 'target' ? 2 : 3);
+
+                $args = [
+                    '--backup-manifest=' . $backup['manifestPath'],
+                    '--app-key=' . $backup['appKeyPath'],
+                ];
+                if ($case === 'key') {
+                    file_put_contents($backup['appKeyPath'], str_repeat('cd', 32) . PHP_EOL);
+                } elseif ($case === 'database') {
+                    $otherDb = $runtime . DIRECTORY_SEPARATOR . 'other.sqlite';
+                    copy($dbPath, $otherDb);
+                    $dbPath = $otherDb;
+                } elseif ($case === 'stale') {
+                    sleep(2);
+                    $args[] = '--max-backup-age=1';
+                }
+
+                $result = $this->runMigrationCommand($dbPath, $args);
+                $this->assertSame(1, $result['exit'], "{$case} manifest unexpectedly passed");
+            }
+        } finally {
+            $this->deleteTree($root);
         }
     }
 
     /**
      * @return array{exit:int,stdout:string,stderr:string}
      */
-    private function runMigrationCommand(string $dbPath): array
+    private function runMigrationCommand(string $dbPath, array $extraArguments = []): array
     {
-        return $this->runPhpCommand(APP_ROOT . '/bin/migrate.php', ['--db=' . $dbPath]);
+        return $this->runPhpCommand(
+            APP_ROOT . '/bin/migrate.php',
+            array_merge(['--db=' . $dbPath], $extraArguments)
+        );
+    }
+
+    /**
+     * @return array{manifestPath:string,appKeyPath:string}
+     */
+    private function createMigrationBackup(string $runtime, string $dbPath, int $target): array
+    {
+        $appKeyPath = $runtime . DIRECTORY_SEPARATOR . 'app.key';
+        $configPath = $runtime . DIRECTORY_SEPARATOR . 'config.local.php';
+        $backupDir = $runtime . DIRECTORY_SEPARATOR . 'backup-v' . $target;
+        file_put_contents($appKeyPath, str_repeat('ab', 32) . PHP_EOL);
+        file_put_contents($configPath, sprintf(
+            "<?php\ndefine('APP_RUNTIME_DIR', %s);\ndefine('DB_PATH', %s);\ndefine('LOG_PATH', %s);\ndefine('APP_BASE_URL', 'https://app.example.test');\ndefine('SYSTEM_HOSTS', ['app.example.test']);\ndefine('TRUSTED_PROXIES', ['172.23.0.2/32']);\n",
+            var_export($runtime, true),
+            var_export($dbPath, true),
+            var_export($runtime . DIRECTORY_SEPARATOR . 'logs' . DIRECTORY_SEPARATOR, true)
+        ));
+
+        $result = $this->runPhpCommandViaShell([
+            'bash',
+            APP_ROOT . '/ops/backup_sqlite.sh',
+            '--db=' . $dbPath,
+            '--app-key=' . $appKeyPath,
+            '--config=' . $configPath,
+            '--output=' . $backupDir,
+            '--migration-target=' . $target,
+            '--source-commit=' . str_repeat('a', 40),
+            '--image-digest=sha256:' . str_repeat('b', 64),
+        ]);
+        if ($result['exit'] !== 0) {
+            throw new RuntimeException('Unable to create migration backup: ' . $result['stderr'] . $result['stdout']);
+        }
+
+        return [
+            'manifestPath' => $backupDir . DIRECTORY_SEPARATOR . 'backup-metadata.json',
+            'appKeyPath' => $appKeyPath,
+        ];
+    }
+
+    /**
+     * @param list<string> $command
+     * @return array{exit:int,stdout:string,stderr:string}
+     */
+    private function runPhpCommandViaShell(array $command): array
+    {
+        $descriptorSpec = [
+            0 => ['pipe', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $process = proc_open($command, $descriptorSpec, $pipes, APP_ROOT);
+        if (!is_resource($process)) {
+            $this->fail('Unable to start backup command.');
+        }
+        fclose($pipes[0]);
+        $stdout = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        $stderr = stream_get_contents($pipes[2]);
+        fclose($pipes[2]);
+
+        return [
+            'exit' => proc_close($process),
+            'stdout' => $stdout === false ? '' : $stdout,
+            'stderr' => $stderr === false ? '' : $stderr,
+        ];
     }
 
     /**

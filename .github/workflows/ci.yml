@@ -101,8 +101,18 @@ jobs:
         with:
           clean: true
 
+      - name: Set up PHP for restore verification
+        uses: shivammathur/setup-php@44454db4f0199b8b9685a5d763dc37cbf79108e1 # 2.36.0
+        with:
+          php-version: '8.4'
+          extensions: pdo_sqlite, sqlite3
+          coverage: none
+
       - name: Run Caddy integration checks
         run: tests/Integration/web_server_test.sh caddy
+
+      - name: Run Compose persistence and recovery lifecycle
+        run: tests/Integration/compose_lifecycle_test.sh
 
   scan:
     needs:
@@ -229,12 +239,14 @@ jobs:
         run: |
           set -euo pipefail
           jq -n \
+            --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             --arg tag "${GITHUB_REF_NAME}" \
             --arg commit "${GITHUB_SHA}" \
             --arg image_ref "${{ steps.image.outputs.release_ref }}@${{ steps.release_image.outputs.digest }}" \
             --arg digest "${{ steps.release_image.outputs.digest }}" \
             --arg sbom_path "sbom.spdx.json" \
             '{
+              created_at: $created_at,
               git: {
                 tag: $tag,
                 commit: $commit,

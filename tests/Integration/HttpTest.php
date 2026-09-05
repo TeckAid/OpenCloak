@@ -88,7 +88,7 @@ final class HttpTest extends TestCase
             $this->assertTrue(password_verify($generatedPassword, $users[0]['password']));
             $this->assertSame(0, (int) $users[0]['must_change_password']);
 
-            $secondRun = $this->runInstallCommand($runtime, ['--username=second-owner', '--password=AnotherStrong123!']);
+            $secondRun = $this->runInstallCommand($runtime, ['--username=second-owner', '--password-stdin'], "AnotherStrong123!\n");
 
             $this->assertSame(1, $secondRun['exit']);
             $this->assertTrue(str_contains($secondRun['stderr'] . $secondRun['stdout'], 'already'));
@@ -105,7 +105,7 @@ final class HttpTest extends TestCase
         $runtime = $this->createRuntimeApp(null, [], false);
 
         try {
-            $install = $this->runInstallCommand($runtime, ['--username=owner', '--password=StrongPass123!']);
+            $install = $this->runInstallCommand($runtime, ['--username=owner', '--password-stdin'], "StrongPass123!\n");
             $this->assertSame(0, $install['exit']);
 
             $server = $this->startRuntimeServer($runtime['docroot']);
@@ -1234,6 +1234,216 @@ final class HttpTest extends TestCase
             $this->assertFalse(str_contains($indexPhp, 'owner-api-key'));
             $this->assertFalse(str_contains($indexPhp, 'CLOAK_API_KEY'));
             $this->assertTrue(str_contains($indexPhp, 'CLOAK_CLIENT_CREDENTIAL'));
+            $this->assertTrue(str_contains($indexPhp, 'visitorStorageKey'));
+            $this->assertTrue(str_contains($indexPhp, 'cloak_visitor_storage_key'));
+
+            $this->stopServer($server['process']);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_client_export_rotation_requires_confirmed_csrf_post_and_is_idempotent(): void
+    {
+        $runtime = $this->createRuntimeApp(
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'owner', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'owner-api-key']);
+                $db->prepare("
+                    INSERT INTO campaigns (id, user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay)
+                    VALUES (1, 1, 'Verify Campaign', 1, 'https://offers.example/offer', '<p>white</p>', 'white', 403, '302', 0)
+                ")->execute();
+            }
+        );
+
+        try {
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $cookie = $this->loginToAdmin($server['port']);
+            $db = new PDO('sqlite:' . $runtime['dbPath']);
+            $db->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+
+            $get = $this->httpRequest(
+                $server['port'],
+                'GET',
+                '/admin/client.php?campaign_id=1',
+                ['Cookie' => $cookie]
+            );
+            $this->assertSame(200, $get['status']);
+            $this->assertSame(0, (int) $db->query('SELECT COUNT(*) FROM client_credentials')->fetchColumn());
+            $this->assertFalse(str_contains($get['body'], 'id="client-index"'));
+
+            $missingCsrf = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/admin/client.php',
+                ['Cookie' => $cookie, 'Content-Type' => 'application/x-www-form-urlencoded'],
+                http_build_query(['campaign_id' => 1, 'confirm_rotation' => 1])
+            );
+            $this->assertSame(403, $missingCsrf['status']);
+            $this->assertSame(0, (int) $db->query('SELECT COUNT(*) FROM client_credentials')->fetchColumn());
+
+            $page = $this->httpRequest($server['port'], 'GET', '/admin/client.php', ['Cookie' => $cookie]);
+            $payload = [
+                '_csrf' => $this->extractCsrfToken($page['body']),
+                'rotation_nonce' => $this->extractHiddenValue($page['body'], 'rotation_nonce'),
+                'campaign_id' => 1,
+                'confirm_rotation' => 1,
+            ];
+            $first = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/admin/client.php',
+                ['Cookie' => $cookie, 'Content-Type' => 'application/x-www-form-urlencoded'],
+                http_build_query($payload)
+            );
+            $this->assertSame(200, $first['status']);
+            $this->assertTrue(str_contains($first['body'], 'id="client-index"'));
+            $this->assertSame(1, (int) $db->query("SELECT COUNT(*) FROM client_credentials WHERE status = 'active'")->fetchColumn());
+
+            $replayed = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/admin/client.php',
+                ['Cookie' => $cookie, 'Content-Type' => 'application/x-www-form-urlencoded'],
+                http_build_query($payload)
+            );
+            $this->assertSame(409, $replayed['status']);
+            $this->assertSame(1, (int) $db->query('SELECT COUNT(*) FROM client_credentials')->fetchColumn());
+
+            $this->stopServer($server['process']);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_visitor_token_issuance_fails_closed_on_http_and_uses_scoped_cookie_names(): void
+    {
+        $interstitial = $this->requestSeeded(
+            'GET',
+            '/promo',
+            static function (PDO $db): void {
+                $db->prepare("
+                    INSERT INTO links (id, user_id, slug, name, offer_url, white_page, is_active, require_screen_info)
+                    VALUES (1, 1, 'promo', 'Promo', 'https://offers.example/promo', '<p>safe</p>', 1, 1)
+                ")->execute();
+            },
+            [
+                'User-Agent' => 'Mozilla/5.0',
+                'Accept' => 'text/html',
+                'Accept-Language' => 'en-US',
+            ]
+        );
+        $expectedStorageKey = 'cloak_vtoken_' . substr(hash('sha256', 'link:1'), 0, 16);
+        $this->assertSame(200, $interstitial['status']);
+        $this->assertTrue(str_contains($interstitial['body'], '"visitorStorageKey":"' . $expectedStorageKey . '"'));
+
+        $response = $this->requestSeeded(
+            'GET',
+            '/promo?_fv=visitor-1&_fph=' . rtrim(strtr(base64_encode('{"w":1280,"h":720,"dpr":1,"touch":false}'), '+/', '-_'), '='),
+            static function (PDO $db): void {
+                $db->prepare("
+                    INSERT INTO links (id, user_id, slug, name, offer_url, white_page, is_active, require_screen_info)
+                    VALUES (1, 1, 'promo', 'Promo', 'https://offers.example/promo', '<p>safe</p>', 1, 1)
+                ")->execute();
+            },
+            [
+                'User-Agent' => 'Mozilla/5.0',
+                'Accept' => 'text/html',
+                'Accept-Language' => 'en-US',
+            ]
+        );
+
+        $this->assertSame(403, $response['status']);
+        $cookies = $response['headers']['set-cookie'] ?? [];
+        $cookies = is_array($cookies) ? $cookies : [$cookies];
+        $this->assertFalse((bool) array_filter($cookies, static fn (mixed $cookie): bool => is_string($cookie) && str_starts_with($cookie, 'cvk_')));
+    }
+
+    public function test_verify_api_cannot_issue_a_visitor_token_over_http_even_when_the_client_claims_https(): void
+    {
+        $runtime = $this->createRuntimeApp(
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'owner', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'owner-api-key']);
+                $db->prepare("
+                    INSERT INTO campaigns (id, user_id, name, is_active, offer_url, white_page, reject_mode, reject_code, redirect_type, redirect_delay)
+                    VALUES (1, 1, 'Verify Campaign', 1, 'https://offers.example/offer', '<p>white</p>', 'white', 403, '302', 0)
+                ")->execute();
+            }
+        );
+
+        try {
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $clientCode = $this->fetchGeneratedClientIndex($runtime, $server['port'], 1);
+            $credential = $this->extractDefinedValue($clientCode, 'CLOAK_CLIENT_CREDENTIAL');
+            $response = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/api/verify',
+                [
+                    'Authorization' => 'Bearer ' . $credential,
+                    'Content-Type' => 'application/json',
+                ],
+                $this->buildVerifyPayload(1, [
+                    'visitor_token' => 'visitor-claimed-https',
+                    'visitor_cookie' => '',
+                    'visitor_https' => true,
+                ])
+            );
+
+            $this->assertSame(403, $response['status']);
+            $this->assertTrue(str_contains($response['body'], 'HTTPS is required'));
+            $this->stopServer($server['process']);
+        } finally {
+            $this->deleteTree($runtime['root']);
+        }
+    }
+
+    public function test_public_debug_query_is_inert_and_admin_diagnostics_require_post_csrf(): void
+    {
+        $debugKey = str_repeat('a', 64);
+        $runtime = $this->createRuntimeApp(
+            static function (PDO $db): void {
+                $db->prepare('INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (?, ?, ?, ?, 0)')
+                    ->execute([1, 'owner', password_hash('StrongPass123!', PASSWORD_DEFAULT), 'owner-api-key']);
+                $db->prepare("
+                    INSERT INTO links (id, user_id, slug, name, offer_url, white_page, is_active)
+                    VALUES (1, 1, 'promo', 'Promo', 'https://offers.example/promo', '<p>safe</p>', 1)
+                ")->execute();
+            },
+            ['APP_KEY' => $debugKey]
+        );
+
+        try {
+            $server = $this->startRuntimeServer($runtime['docroot']);
+            $public = $this->httpRequest(
+                $server['port'],
+                'GET',
+                '/promo?_debug=' . substr(hash_hmac('sha256', 'debug', $debugKey), 0, 16),
+                ['User-Agent' => 'Mozilla/5.0', 'Accept' => 'text/html', 'Accept-Language' => 'en-US']
+            );
+            $this->assertSame(302, $public['status']);
+            $this->assertFalse(str_contains($public['body'], '"detection"'));
+
+            $cookie = $this->loginToAdmin($server['port']);
+            $linksPage = $this->httpRequest($server['port'], 'GET', '/admin/links.php', ['Cookie' => $cookie]);
+            $this->assertFalse(str_contains($linksPage['body'], '_debug='));
+            $this->assertFalse(str_contains($linksPage['body'], 'DEBUG_TOKEN'));
+
+            $getDiagnostics = $this->httpRequest($server['port'], 'GET', '/admin/diagnostics.php?link_id=1', ['Cookie' => $cookie]);
+            $this->assertSame(405, $getDiagnostics['status']);
+
+            $postDiagnostics = $this->httpRequest(
+                $server['port'],
+                'POST',
+                '/admin/diagnostics.php',
+                ['Cookie' => $cookie, 'Content-Type' => 'application/x-www-form-urlencoded'],
+                http_build_query(['_csrf' => $this->extractCsrfToken($linksPage['body']), 'link_id' => 1])
+            );
+            $this->assertSame(200, $postDiagnostics['status']);
+            $decoded = json_decode($postDiagnostics['body'], true);
+            $this->assertSame(1, (int) ($decoded['link_id'] ?? 0));
+            $this->assertTrue(array_key_exists('detection', is_array($decoded) ? $decoded : []));
 
             $this->stopServer($server['process']);
         } finally {
@@ -1495,7 +1705,7 @@ final class HttpTest extends TestCase
         }
     }
 
-    public function test_generated_client_ignores_untrusted_forwarded_proto_for_secure_cookie(): void
+    public function test_generated_client_fails_closed_when_visitor_token_arrives_over_http(): void
     {
         $stub = $this->startStubServer(json_encode([
             'allowed' => true,
@@ -1507,6 +1717,7 @@ final class HttpTest extends TestCase
             'reject_target' => '',
             'redirect_type' => '302',
             'redirect_delay' => 0,
+            'visitor_cookie_name' => 'cvk_bad',
             'visitor_cookie' => 'signed-visitor-cookie',
         ], JSON_UNESCAPED_SLASHES));
 
@@ -1524,11 +1735,9 @@ final class HttpTest extends TestCase
                     ['X-Forwarded-Proto' => 'https']
                 );
 
-                $setCookie = $this->findSetCookie($response['headers'], 'clk');
-
-                $this->assertSame(302, $response['status']);
-                $this->assertTrue($setCookie !== '');
-                $this->assertFalse(str_contains(strtolower($setCookie), 'secure'));
+                $this->assertSame(403, $response['status']);
+                $this->assertTrue(str_contains($response['body'], 'HTTPS is required'));
+                $this->assertSame('', $this->findSetCookie($response['headers'], 'cvk_'));
             } finally {
                 $this->stopServer($landing['process']);
                 $this->deleteTree($landing['root']);
@@ -1539,7 +1748,7 @@ final class HttpTest extends TestCase
         }
     }
 
-    public function test_generated_client_blocks_local_money_page_path_traversal(): void
+    public function test_generated_client_rejects_non_http_offer_targets(): void
     {
         $stub = $this->startStubServer(json_encode([
             'allowed' => true,
@@ -1565,7 +1774,7 @@ final class HttpTest extends TestCase
             try {
                 $response = $this->httpRequest($landing['port'], 'GET', '/index.php');
 
-                $this->assertSame(404, $response['status']);
+                $this->assertSame(502, $response['status']);
                 $this->assertFalse(str_contains($response['body'], 'Leaked Secret'));
             } finally {
                 $this->stopServer($landing['process']);
@@ -1696,7 +1905,19 @@ final class HttpTest extends TestCase
     {
         $this->setRuntimeBaseUrl($runtime, $appPort);
         $cookie = $this->loginToAdmin($appPort);
-        $page = $this->httpRequest($appPort, 'GET', '/admin/client.php?campaign_id=' . $campaignId, ['Cookie' => $cookie]);
+        $form = $this->httpRequest($appPort, 'GET', '/admin/client.php', ['Cookie' => $cookie]);
+        $page = $this->httpRequest(
+            $appPort,
+            'POST',
+            '/admin/client.php',
+            ['Cookie' => $cookie, 'Content-Type' => 'application/x-www-form-urlencoded'],
+            http_build_query([
+                '_csrf' => $this->extractCsrfToken($form['body']),
+                'rotation_nonce' => $this->extractHiddenValue($form['body'], 'rotation_nonce'),
+                'campaign_id' => $campaignId,
+                'confirm_rotation' => 1,
+            ])
+        );
 
         $this->assertSame(200, $page['status']);
 
@@ -2118,7 +2339,7 @@ PHP;
      * @param list<string> $arguments
      * @return array{exit:int,stdout:string,stderr:string}
      */
-    private function runInstallCommand(array $runtime, array $arguments): array
+    private function runInstallCommand(array $runtime, array $arguments, string $stdin = ''): array
     {
         $command = array_merge([PHP_BINARY, $runtime['docroot'] . '/install.php'], $arguments);
         $descriptorSpec = [
@@ -2132,6 +2353,9 @@ PHP;
             throw new RuntimeException('Unable to start install.php for integration test');
         }
 
+        if ($stdin !== '') {
+            fwrite($pipes[0], $stdin);
+        }
         fclose($pipes[0]);
         $stdout = stream_get_contents($pipes[1]);
         fclose($pipes[1]);
@@ -2150,6 +2374,15 @@ PHP;
     {
         if (!preg_match('/name="_csrf" value="([^"]+)"/', $body, $matches)) {
             throw new RuntimeException('Unable to locate CSRF token in response body');
+        }
+
+        return html_entity_decode($matches[1], ENT_QUOTES);
+    }
+
+    private function extractHiddenValue(string $body, string $name): string
+    {
+        if (!preg_match('/name="' . preg_quote($name, '/') . '" value="([^"]+)"/', $body, $matches)) {
+            throw new RuntimeException("Unable to locate {$name} in response body");
         }
 
         return html_entity_decode($matches[1], ENT_QUOTES);

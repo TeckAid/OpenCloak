@@ -45,46 +45,6 @@ if ($slug !== '') {
     $link = $stmt->fetch() ?: null;
 }
 
-// ---- Debug mode (secret-token gated) -------------------------------------------
-if (($debugToken = app_query_scalar('_debug', 128)) !== null) {
-    $validToken = defined('DEBUG_TOKEN') && hash_equals(DEBUG_TOKEN, $debugToken);
-    if ($validToken) {
-        $fingerprintToken = app_query_scalar('_fph');
-        $fingerprint = $fingerprintToken !== null ? fingerprint_decode($fingerprintToken) : [];
-        $payload = [
-            'slug'       => $slug,
-            'host'       => $host,
-            'domain'     => $domainRow ? $domainRow['domain'] : '(system)',
-            'link_found' => $link !== null,
-            'show_offer' => null,
-            'detection'  => null,
-        ];
-        if ($link !== null) {
-            $rules = effective_rules($db, $link);
-            if ($rules !== null) {
-                $detector = new BotDetector();
-                $scopeKind = !empty($link['campaign_id']) ? 'campaign' : 'link';
-                $scopeId = !empty($link['campaign_id']) ? (int) $link['campaign_id'] : (int) $link['id'];
-                $visitorToken = app_query_scalar('_fv', 512) ?? '';
-                $signedVisitor = $visitorToken !== ''
-                    ? verify_visitor_token((string) ($_COOKIE['cvk'] ?? ''), visitor_scope_key($scopeKind, $scopeId))
-                    : false;
-                $eval = $detector->evaluate($rules, $fingerprint, is_string($signedVisitor) && hash_equals($signedVisitor, $visitorToken));
-                $payload['show_offer'] = $eval['allowed'];
-                $payload['reasons'] = $eval['reasons'];
-                $payload['detection'] = $detector->getResult();
-                $payload['device'] = $detector->getDeviceType();
-                $payload['fingerprint'] = $fingerprint;
-            } else {
-                $payload['reasons'] = ['campaign_inactive'];
-            }
-        }
-        header('Content-Type: application/json');
-        echo json_encode($payload, JSON_PRETTY_PRINT);
-        exit;
-    }
-}
-
 // ---- Unknown slug: 404 with safe page --------------------------------------------
 if ($link === null) {
     http_response_code(404);
@@ -95,6 +55,7 @@ if ($link === null) {
 
 // ---- Effective rules (campaign or link-local) --------------------------------------
 $rules = effective_rules($db, $link);
+$pendingVisitorIssue = null;
 if ($rules === null) {
     $evalResult = ['allowed' => false, 'reasons' => ['campaign_inactive']];
     $detector = new BotDetector();
@@ -109,9 +70,10 @@ if ($rules === null) {
         || !empty($rules['single_visit_only']);
     $scopeKind = !empty($link['campaign_id']) ? 'campaign' : 'link';
     $scopeId = !empty($link['campaign_id']) ? (int) $link['campaign_id'] : (int) $link['id'];
+    $scopeKey = visitor_scope_key($scopeKind, $scopeId);
     $visitorToken = app_query_scalar('_fv', 512) ?? '';
     $signedVisitor = $visitorToken !== ''
-        ? verify_visitor_token((string) ($_COOKIE['cvk'] ?? ''), visitor_scope_key($scopeKind, $scopeId))
+        ? verify_visitor_token((string) ($_COOKIE[visitor_cookie_name($scopeKey)] ?? ''), $scopeKey)
         : false;
     $tokenPresent = is_string($signedVisitor) && hash_equals($signedVisitor, $visitorToken);
 
@@ -121,9 +83,12 @@ if ($rules === null) {
         $base = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
         $query = $_GET;
         unset($query['_fph'], $query['_fv'], $query['_debug']);
-        serve_interstitial($base, $query);
+        serve_interstitial($base, $query, $scopeKey);
         exit;
     } else {
+        if ($visitorToken !== '' && !app_is_https()) {
+            app_abort_request(403, 'HTTPS is required for visitor verification.');
+        }
         $detector = new BotDetector();
         $evalResult = $detector->evaluate($rules, $fingerprint, $tokenPresent);
         $detectionResult = $detector->getResult();
@@ -143,20 +108,37 @@ if ($rules === null) {
             }
         }
 
-        // Issue the visitor token on first completed fingerprint round-trip
+        // Defer issuance until the final delivery target is validated so a
+        // denied direct request follows the same policy as client mode.
         if ($fingerprint !== [] && $visitorToken !== '') {
-            setcookie('cvk', sign_visitor_token(visitor_scope_key($scopeKind, $scopeId), $visitorToken), [
-                'expires'  => time() + 86400 * 365,
-                'path'     => '/',
-                'secure'   => app_is_https(),
-                'httponly' => true,
-                'samesite' => 'Lax',
-            ]);
+            $pendingVisitorIssue = [$scopeKey, $visitorToken];
         }
     }
 }
 
 $showOffer = $evalResult['allowed'];
+$delivery = null;
+$offerUrl = '';
+if ($showOffer) {
+    $delivery = build_delivery_config(
+        $rules,
+        (string) ($detectionResult['country'] ?? ''),
+        (int) ($rules['offer_shows'] ?? 0)
+    );
+    $offerUrl = (string) $delivery['offer_url'];
+
+    if ($offerUrl !== '' && !empty($rules['forward_utms'])) {
+        $params = $_GET;
+        unset($params['_fph'], $params['_fv'], $params['_debug'], $params['clid']);
+        if ($params !== []) {
+            $offerUrl .= (strpos($offerUrl, '?') !== false ? '&' : '?') . http_build_query($params);
+        }
+    }
+    if (!is_valid_offer_url($offerUrl)) {
+        $showOffer = false;
+        $evalResult = ['allowed' => false, 'reasons' => ['invalid_offer_url']];
+    }
+}
 
 // ---- Log the hit -------------------------------------------------------------------
 if (defined('LOG_ENABLED') && LOG_ENABLED) {
@@ -165,69 +147,43 @@ if (defined('LOG_ENABLED') && LOG_ENABLED) {
         (string)($detectionResult['client_type'] ?? ''),
         app_query_scalar('utm_source', 255) ?? ''
     );
-    $db->prepare("
-        INSERT INTO hit_log (link_id, campaign_id, host, ip, user_agent, referer, language, country,
-                             device_type, os_name, os_version, client_type, source,
-                             is_bot, is_vpn, is_datacenter, shown_page, reject_reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ")->execute([
-        (int)$link['id'],
-        !empty($link['campaign_id']) ? (int)$link['campaign_id'] : null,
-        $host,
-        app_client_ip(),
-        $_SERVER['HTTP_USER_AGENT'] ?? '',
-        $_SERVER['HTTP_REFERER'] ?? '',
-        $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '',
-        $detectionResult['country'] ?? '',
-        $detectionResult['device_type'] ?? '',
-        $detectionResult['os_name'] ?? '',
-        $detectionResult['os_version'] ?? '',
-        $detectionResult['client_type'] ?? '',
-        $source,
-        !empty($detectionResult['is_bot']) ? 1 : 0,
-        !empty($detectionResult['is_vpn']) ? 1 : 0,
-        !empty($detectionResult['is_datacenter']) ? 1 : 0,
-        $showOffer ? 'offer' : 'white',
-        $showOffer ? null : implode(',', $evalResult['reasons']),
-    ]);
-
-    if ($showOffer) {
-        $db->prepare("UPDATE links SET total_hits = total_hits + 1, offer_shows = offer_shows + 1 WHERE id = ?")
-           ->execute([(int)$link['id']]);
-        if (!empty($link['campaign_id'])) {
-            $db->prepare("UPDATE campaigns SET total_hits = total_hits + 1, offer_shows = offer_shows + 1 WHERE id = ?")
-               ->execute([(int)$link['campaign_id']]);
-        }
-    } else {
-        $db->prepare("UPDATE links SET total_hits = total_hits + 1, white_shows = white_shows + 1 WHERE id = ?")
-           ->execute([(int)$link['id']]);
-        if (!empty($link['campaign_id'])) {
-            $db->prepare("UPDATE campaigns SET total_hits = total_hits + 1, white_shows = white_shows + 1 WHERE id = ?")
-               ->execute([(int)$link['campaign_id']]);
-        }
-    }
+    record_hit($db, [
+        'link_id' => (int) $link['id'],
+        'campaign_id' => !empty($link['campaign_id']) ? (int) $link['campaign_id'] : null,
+        'host' => $host,
+        'ip' => app_client_ip(),
+        'user_agent' => $_SERVER['HTTP_USER_AGENT'] ?? '',
+        'referer' => $_SERVER['HTTP_REFERER'] ?? '',
+        'language' => $_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? '',
+        'country' => $detectionResult['country'] ?? '',
+        'device_type' => $detectionResult['device_type'] ?? '',
+        'os_name' => $detectionResult['os_name'] ?? '',
+        'os_version' => $detectionResult['os_version'] ?? '',
+        'client_type' => $detectionResult['client_type'] ?? '',
+        'source' => $source,
+        'is_bot' => !empty($detectionResult['is_bot']),
+        'is_vpn' => !empty($detectionResult['is_vpn']),
+        'is_datacenter' => !empty($detectionResult['is_datacenter']),
+        'reject_reason' => $showOffer ? null : implode(',', $evalResult['reasons']),
+    ], $showOffer);
 
     maintenance_tick($db);
 }
 
+if (is_array($pendingVisitorIssue)) {
+    $cookie = visitor_cookie_issue(
+        (string) $pendingVisitorIssue[0],
+        (string) $pendingVisitorIssue[1],
+        app_is_https(),
+        $showOffer
+    );
+    if (is_array($cookie)) {
+        setcookie($cookie['name'], $cookie['value'], $cookie['options']);
+    }
+}
+
 // ---- Route to offer / white page / error ------------------------------------------------
 if ($showOffer) {
-    $delivery = build_delivery_config(
-        $rules,
-        (string)($detectionResult['country'] ?? ''),
-        (int)($rules['offer_shows'] ?? 0)
-    );
-    $offerUrl = $delivery['offer_url'];
-
-    // Forward original UTM parameters to the offer (reference-script UTM mode)
-    if ($offerUrl !== '' && !empty($rules['forward_utms'])) {
-        $params = $_GET;
-        unset($params['_fph'], $params['_fv'], $params['_debug'], $params['clid']);
-        if ($params !== []) {
-            $offerUrl .= (strpos($offerUrl, '?') !== false ? '&' : '?') . http_build_query($params);
-        }
-    }
-
     // No-cache mode: force the browser/proxies to bypass caches
     if (!empty($rules['no_cache'])) {
         header('Cache-Control: private, max-age=0, no-cache, no-store, must-revalidate, s-maxage=0');
@@ -239,9 +195,7 @@ if ($showOffer) {
     $delay = $delivery['redirect_delay'];
     $redirectType = $delivery['redirect_type'];
 
-    if (!is_valid_offer_url($offerUrl)) {
-        $showOffer = false;
-    } elseif ($offerMethod === 'iframe') {
+    if ($offerMethod === 'iframe') {
         // Full-page iframe (reference-script OFFER_METHOD=iframe)
         $safeUrl = htmlspecialchars($offerUrl, ENT_QUOTES, 'UTF-8');
         echo "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\">\n"
@@ -293,11 +247,14 @@ exit;
  * Minimal interstitial page that collects a fingerprint via JS and
  * re-requests the same URL with the payload attached.
  */
-function serve_interstitial(string $path, array $query): void
+function serve_interstitial(string $path, array $query, string $visitorScope): void
 {
     $qs = http_build_query($query);
     $redirect = $path . ($qs !== '' ? '?' . $qs : '');
-    $fpConfig = json_encode(['redirect' => $redirect], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
+    $fpConfig = json_encode([
+        'redirect' => $redirect,
+        'visitorStorageKey' => visitor_storage_key($visitorScope),
+    ], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT);
     echo "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"UTF-8\">\n"
        . "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
        . "<title>Loading…</title>\n"

@@ -1,8 +1,19 @@
-# Data and logs
-data/*.db
-data/*.db-wal
-data/*.db-shm
-logs/*.log
+# Runtime data, credentials, logs, and local deployment configuration
+/config.local.php
+/data/*
+!/data/.gitkeep
+/logs/*
+!/logs/.gitkeep
+/runtime/
+/cloaking-runtime/
+**/app.key
+**/*.sqlite
+**/*.sqlite-wal
+**/*.sqlite-shm
+**/*.db
+**/*.db-wal
+**/*.db-shm
+/ops/rehearsals/**/backup-artifacts/
 
 # IDE
 .vscode/

@@ -19,6 +19,10 @@ app.example.com, s.example.com {
     }
 }
 
-http:// {
+http://app.example.com, http://s.example.com {
     redir https://{host}{uri} permanent
+}
+
+http:// {
+    respond "unknown host" 421
 }

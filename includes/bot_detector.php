@@ -16,6 +16,7 @@ class BotDetector
     private string $ip;
     private array $headers;
     private array $context;
+    private mixed $ipIntelligenceTransport;
     private ?array $detected = null;
     private ?array $validatedParams = null;
 
@@ -37,6 +38,7 @@ class BotDetector
         'os_version'      => '',
         'device_type'     => 'desktop',
         'reasons'         => [],
+        'ip_intelligence_status' => 'not_requested',
     ];
 
     private static array $botPatterns = [
@@ -119,9 +121,10 @@ class BotDetector
      * @param array $context Optional environment override for API/client-mode
      *        evaluation: accept, language, referer, params, fingerprint, token_present
      */
-    public function __construct(?string $ip = null, ?string $userAgent = null, array $context = [])
+    public function __construct(?string $ip = null, ?string $userAgent = null, array $context = [], ?callable $ipIntelligenceTransport = null)
     {
         $this->context = $context;
+        $this->ipIntelligenceTransport = $ipIntelligenceTransport;
         $this->ip = $ip ?: app_client_ip();
         $this->userAgent = $userAgent ?: $this->envStr('HTTP_USER_AGENT', '');
         $this->headers = $this->collectHeaders();
@@ -198,6 +201,11 @@ class BotDetector
         if (!empty($rules['block_tor']) && $result['is_tor'])              $deny('tor_exit_node');
         if (!empty($rules['block_headless']) && $result['is_headless'])    $deny('headless_browser');
         if (!empty($rules['block_curl']) && $result['is_curl'])            $deny('http_client');
+        if (!empty($needs['datacenter'])
+            && ($result['ip_intelligence_status'] ?? '') === 'unavailable'
+            && (!defined('IP_INTELLIGENCE_FAILURE_MODE') || strtolower((string) IP_INTELLIGENCE_FAILURE_MODE) !== 'open')) {
+            $deny('ip_intelligence_unavailable');
+        }
 
         // Country. When allow_geo_override is on, the utm_allow_geo parameter
         // replaces the detected country (reference-script behavior).
@@ -506,59 +514,42 @@ class BotDetector
 
     private function checkDatacenter(): void
     {
-        $data = $this->cachedLookup('ip', $this->ip, 86400, function (string $ip): ?array {
-            if (!$this->ipApiAvailable()) {
-                return null;
-            }
-            $context = stream_context_create([
-                'http' => [
-                    'timeout' => 1.5,
-                    'ignore_errors' => true,
-                    'header' => "Accept: application/json\r\n",
-                ],
-            ]);
-            $response = @file_get_contents(
-                "http://ip-api.com/json/" . rawurlencode($ip) . "?fields=status,as,isp,org,proxy,hosting,countryCode",
-                false,
-                $context
-            );
-            if ($response === false) {
-                $this->recordIpApiFailure();
-                return null;
-            }
-            $data = json_decode($response, true);
-            if (!is_array($data) || ($data['status'] ?? '') !== 'success') {
-                $this->recordIpApiFailure();
-                return null;
-            }
-            $this->recordIpApiSuccess();
-            return $data;
-        });
+        $fetcher = fn (string $ip): ?array => app_fetch_ip_intelligence($ip, $this->ipIntelligenceTransport);
+        $data = $this->ipIntelligenceTransport !== null
+            ? $fetcher($this->ip)
+            : $this->cachedLookup('ip_intelligence', $this->ip, 86400, $fetcher);
 
-        if ($data === null) {
+        if ($data === null
+            || !is_array($data)
+            || ($data['ip'] ?? null) !== $this->ip
+            || preg_match('/^AS\d{1,10}$/', (string) ($data['asn'] ?? '')) !== 1
+            || preg_match('/^[A-Z]{2}$/', (string) ($data['country_code'] ?? '')) !== 1
+            || !is_bool($data['is_proxy'] ?? null)
+            || !is_bool($data['is_hosting'] ?? null)) {
+            $this->result['ip_intelligence_status'] = 'unavailable';
             return;
         }
+        $this->result['ip_intelligence_status'] = 'ok';
 
-        $asn = preg_replace('/^AS(\d+).*$/', '$1', (string)($data['as'] ?? ''));
-        $asnKey = 'AS' . $asn;
+        $asnKey = (string) ($data['asn'] ?? '');
         if (isset(self::$reviewInfraASNs[$asnKey])) {
             $this->result['is_review_infra'] = true;
             $this->result['review_platform'] = self::$reviewInfraASNs[$asnKey];
-            $this->result['reasons'][] = 'review_infra_asn:' . $data['as'];
+            $this->result['reasons'][] = 'review_infra_asn:' . $asnKey;
         }
-        if ($asn !== '' && in_array($asnKey, self::$datacenterASNs, true)) {
+        if (in_array($asnKey, self::$datacenterASNs, true)) {
             $this->result['is_datacenter'] = true;
-            $this->result['reasons'][] = 'datacenter_asn:' . $data['as'];
+            $this->result['reasons'][] = 'datacenter_asn:' . $asnKey;
         }
-        if (!empty($data['hosting'])) {
+        if ($data['is_hosting'] === true) {
             $this->result['is_datacenter'] = true;
             $this->result['reasons'][] = 'hosting_provider';
         }
-        if (!empty($data['proxy'])) {
+        if ($data['is_proxy'] === true) {
             $this->result['is_vpn'] = true;
             $this->result['reasons'][] = 'proxy_detected';
         }
-        $this->result['country'] = (string)($data['countryCode'] ?? '');
+        $this->result['country'] = (string) ($data['country_code'] ?? '');
     }
 
     private function checkTor(): void
@@ -619,42 +610,6 @@ class BotDetector
             }
         }
         $this->result['reasons'][] = 'unverified_crawler_claim:' . $claim;
-    }
-
-    // ---- ip-api.com circuit breaker ----------------------------------------------------------
-
-    private function ipApiStateFile(): string
-    {
-        return sys_get_temp_dir() . '/cloak_ipapi_state.json';
-    }
-
-    private function ipApiAvailable(): bool
-    {
-        $raw = @file_get_contents($this->ipApiStateFile());
-        $state = $raw ? json_decode($raw, true) : null;
-        if (!is_array($state)) {
-            return true;
-        }
-        return (int)($state['cooldown_until'] ?? 0) < time();
-    }
-
-    private function recordIpApiSuccess(): void
-    {
-        @file_put_contents($this->ipApiStateFile(), json_encode(['failures' => 0, 'cooldown_until' => 0]));
-    }
-
-    private function recordIpApiFailure(): void
-    {
-        $raw = @file_get_contents($this->ipApiStateFile());
-        $state = $raw ? json_decode($raw, true) : null;
-        $failures = is_array($state) ? (int)($state['failures'] ?? 0) : 0;
-        $failures++;
-        $cooldown = 0;
-        if ($failures >= 5) {
-            $cooldown = time() + 300;
-            $failures = 0;
-        }
-        @file_put_contents($this->ipApiStateFile(), json_encode(['failures' => $failures, 'cooldown_until' => $cooldown]));
     }
 
     // ---- Caching ------------------------------------------------------------------------------

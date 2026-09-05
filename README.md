@@ -1,6 +1,6 @@
 # Cloaking SaaS
 
-A self-hosted PHP cloaking solution with bot detection, campaigns, multi-domain short links, client-side deployment, fingerprinting, admin panel, and REST API. Requires **PHP 8.0+** with the PDO SQLite extension.
+A self-hosted PHP cloaking solution with bot detection, campaigns, multi-domain short links, client-side deployment, fingerprinting, admin panel, and REST API. Requires **PHP 8.4+** with the PDO SQLite extension.
 
 ## Features
 
@@ -30,30 +30,33 @@ A self-hosted PHP cloaking solution with bot detection, campaigns, multi-domain 
 - **In-app referer exemption**: Meta/TikTok in-app clicks are exempt from empty-referer denials
 - **Request log** with stored reject reasons, per-source breakdown, campaign/source/reason filters, block-rate chart
 - **Reject actions**: white page or HTTP error (403/404/410/429/451)
-- **Security**: CSRF, login rate limiting, hardened sessions, secret-token debug mode, spoof-proof client IP, forced password change
+- **Security**: CSRF, login rate limiting, hardened sessions, authenticated diagnostics, spoof-proof client IP, and fail-closed secret persistence
 
 ## Installation
 
-### Quick start (Apache / PHP 8+)
+### Quick start (Apache / PHP 8.4+)
 
 1. Copy files to your web root
 2. Move mutable state out of the deployed app tree or set `APP_RUNTIME_DIR` to a root-owned runtime path such as `/srv/cloaking/runtime`
 3. Ensure the runtime directory and logs are writable by the PHP user only
 4. Set a real admin password (recommended before going live):
    ```bash
-   php install.php --username=admin --password='YourStrongPass123!'
+   php install.php --username=admin --password-stdin < /secure/admin-password
    ```
-5. Access the admin panel at `http://yoursite.com/admin/`
+5. Access the admin panel over TLS at `https://yoursite.com/admin/`
 
-Default login (only if you skipped `install.php`): `admin` / `admin` — **you will be forced to change it on first login.**
+There is no default administrator. The CLI installer creates the first account
+exactly once; an uninitialized web request never creates credentials.
 
 ### Docker
 
 ```bash
 cp ops/config.local.php.example /srv/cloaking/config/config.local.php
+export CLOAKING_RUNTIME_PATH=/srv/cloaking/runtime
+export CLOAKING_CONFIG_PATH=/srv/cloaking/config/config.local.php
 docker compose up -d
-docker compose exec web php install.php --username=admin --password='YourStrongPass123!'
-docker compose exec web php bin/migrate.php --db=/var/www/html/data/cloaking.sqlite
+docker compose exec web php bin/migrate.php --db=/srv/cloaking/runtime/cloaking.sqlite
+docker compose exec -T web php install.php --username=admin --password-stdin < /secure/admin-password
 ```
 
 The `web` container is private by default. Do not publish port `8080` or `80` from the PHP container directly. Terminate TLS at the edge proxy and attach it to the private app network only.
@@ -73,7 +76,10 @@ bash ops/backup_sqlite.sh \
   --db=/srv/cloaking/runtime/cloaking.sqlite \
   --app-key=/srv/cloaking/runtime/app.key \
   --config=/srv/cloaking/config/config.local.php \
-  --output=/srv/cloaking/backups/$(date -u +%Y%m%dT%H%M%SZ)
+  --output=/srv/cloaking/backups/$(date -u +%Y%m%dT%H%M%SZ) \
+  --migration-target=3 \
+  --source-commit="$SOURCE_COMMIT" \
+  --image-digest="$IMAGE_DIGEST"
 ```
 
 The backup command fails closed if `--config` is omitted, unreadable, or points
@@ -85,7 +91,11 @@ Then rehearse that backup with:
 ```bash
 bash ops/restore_rehearsal.sh \
   --backup=/srv/cloaking/backups/20260904T000000Z \
-  --evidence-dir=ops/rehearsals/20260904T000000Z
+  --evidence-dir=ops/rehearsals/20260904T000000Z \
+  --admin-username=owner \
+  --admin-password-stdin \
+  --expected-source-commit="$SOURCE_COMMIT" \
+  --expected-image-digest="$IMAGE_DIGEST" < /secure/admin-password
 ```
 
 Before cutting a release tag, validate the release inputs from a clean checkout:
@@ -155,19 +165,14 @@ php -S 127.0.0.1:8080 dev-router.php
 
 ### Testing
 
-Each link has a **Test** button that shows live detection results using your secret debug token (displayed in **Settings**). Manual form:
-
-```
-http://yoursite.com/my-campaign?_debug=YOUR_DEBUG_TOKEN
-```
-
-Add `&_fph=…` only if you have a fingerprint payload — normally the interstitial handles it.
+Each link has an authenticated **Diagnostics** action. It submits a CSRF-protected
+POST from the admin Links page; public link URLs do not accept diagnostic tokens.
 
 ### Client-deployment mode
 
 1. Admin → **Client Mode** → pick a campaign → **Generate Client**
 2. Download `index.php` and `tracker.min.js`, upload both to your landing server
-3. Visitors are verified against `/api/verify`; the client redirects to the offer (or renders a local money page file) or shows the safe page / error per the campaign
+3. Visitors are verified against `/api/verify`; the client delivers a validated HTTP(S) offer URL or shows the safe page / error per the campaign
 
 The client's API key is embedded in a **server-side PHP file** — never expose it in public frontend code.
 
@@ -193,26 +198,26 @@ Authenticate with `Authorization: Bearer {api_key}` (header only).
 
 ```bash
 # Links
-curl -H "Authorization: Bearer KEY" http://yoursite.com/api/links
+curl -H "Authorization: Bearer KEY" https://yoursite.com/api/links
 curl -X POST -H "Authorization: Bearer KEY" -H "Content-Type: application/json" \
   -d '{"name":"My Link","offer_url":"https://example.com/offer","slug":"my-link","campaign_id":1,"domain_id":2}' \
-  http://yoursite.com/api/links
+  https://yoursite.com/api/links
 
 # Campaigns (CRUD + clone)
-curl -H "Authorization: Bearer KEY" http://yoursite.com/api/campaigns
+curl -H "Authorization: Bearer KEY" https://yoursite.com/api/campaigns
 curl -X POST -H "Authorization: Bearer KEY" -H "Content-Type: application/json" \
   -d '{"name":"TikTok mobile","offer_url":"https://example.com/offer","allowed_clients":"tiktok","allowed_devices":"mobile"}' \
-  http://yoursite.com/api/campaigns
-curl -X POST -H "Authorization: Bearer KEY" http://yoursite.com/api/campaigns/1/clone
+  https://yoursite.com/api/campaigns
+curl -X POST -H "Authorization: Bearer KEY" https://yoursite.com/api/campaigns/1/clone
 
 # Domains
 curl -X POST -H "Authorization: Bearer KEY" -H "Content-Type: application/json" \
-  -d '{"domain":"s.example.com"}' http://yoursite.com/api/domains
+  -d '{"domain":"s.example.com"}' https://yoursite.com/api/domains
 
 # Verify (client mode)
 curl -X POST -H "Authorization: Bearer KEY" -H "Content-Type: application/json" \
   -d '{"campaign_id":1,"ip":"1.2.3.4","user_agent":"...","referer":"https://www.facebook.com/","language":"en-US","params":{"utm_source":"fb"}}' \
-  http://yoursite.com/api/verify
+  https://yoursite.com/api/verify
 ```
 
 ## Configuration
@@ -224,20 +229,23 @@ Edit `config.local.php` (copy `config.local.example.php`) to override:
 - `APP_BASE_URL` / `SYSTEM_HOSTS` — canonical app hostname and system-owned short-link hosts
 - `TRUSTED_PROXIES` — proxies allowed to set forwarding headers (Cloudflare etc.)
 - `ENABLE_TOR_CHECK` — toggle Tor DNSBL lookups
+- `IP_INTELLIGENCE_ENDPOINT` / `IP_INTELLIGENCE_API_KEY` — reviewed authenticated HTTPS or local adapter
+- `IP_INTELLIGENCE_FAILURE_MODE` — `closed` by default; explicit `open` requires recorded risk acceptance
 - `LOGIN_MAX_ATTEMPTS` / `LOGIN_WINDOW_SECONDS` — login rate limiting
 - `LOG_RETENTION_DAYS` — hit-log retention (pruned automatically)
 
-Secrets (app key, debug token, admin secret) are generated automatically in `APP_RUNTIME_DIR/app.key` on first run unless you set them explicitly.
+The app key is generated atomically with mode `0600` in `APP_RUNTIME_DIR/app.key` on first run unless you set it explicitly.
 
 ## Security notes
 
-- Change the default password immediately (`php install.php`)
-- Serve over HTTPS (admin cookies are Secure-only when HTTPS is detected)
+- Create the first administrator through `install.php --password-stdin`; there is no default password
+- Serve over HTTPS; visitor-token issuance fails closed without it
 - Keep `config.local.php`, `app.key`, the SQLite database, and backups out of the public docroot
 - `data/`, `logs/`, and `includes/` are denied by `.htaccess` / `nginx.conf`
 - Never put your API key in URLs — the API only accepts the Authorization header
 - Client-mode API keys live in server-side PHP files only
 - Rotate API keys from **Settings** when needed
+- Complete the privacy and vendor controls in [docs/IP_INTELLIGENCE.md](/Users/nasir/Documents/GitHub/Cloaking/docs/IP_INTELLIGENCE.md) before enabling IP intelligence
 
 Vulnerability handling and release secret expectations live in
 [SECURITY.md](/Users/nasir/Documents/GitHub/Cloaking/SECURITY.md).
