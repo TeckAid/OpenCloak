@@ -151,10 +151,11 @@ function migrate(PDO $db, bool $destructiveBackupVerified = false): void
             $appliedVersions[] = $version;
         }
 
-        $db->commit();
+        $db->exec('COMMIT');
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
+        try {
+            $db->exec('ROLLBACK');
+        } catch (Throwable) {
         }
         throw $e;
     }
@@ -210,10 +211,11 @@ function rollbackDatabaseToVersion(PDO $db, int $toVersion): void
             $db->prepare('DELETE FROM schema_migrations WHERE version = ?')->execute([$version]);
         }
 
-        $db->commit();
+        $db->exec('COMMIT');
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
+        try {
+            $db->exec('ROLLBACK');
+        } catch (Throwable) {
         }
         throw $e;
     }
@@ -733,10 +735,11 @@ function record_hit(PDO $db, array $hit, bool $showOffer): void
             }
         }
 
-        $db->commit();
+        $db->exec('COMMIT');
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
+        try {
+            $db->exec('ROLLBACK');
+        } catch (Throwable) {
         }
         throw $e;
     }

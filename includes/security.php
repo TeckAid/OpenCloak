@@ -547,12 +547,13 @@ function rate_limit(string $key, int $max, int $windowSeconds): bool
              ON CONFLICT(rkey) DO UPDATE SET count = excluded.count, reset_at = excluded.reset_at'
         )->execute([$key, $count, $currentResetAt]);
 
-        $db->commit();
+        $db->exec('COMMIT');
 
         return $allowed;
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
+        try {
+            $db->exec('ROLLBACK');
+        } catch (Throwable) {
         }
         throw $e;
     }

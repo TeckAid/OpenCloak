@@ -609,17 +609,18 @@ function delete_owned_row_without_references(
     try {
         $linkCount = referenced_link_count($db, $referenceColumn, $userId, $rowId);
         if ($linkCount > 0) {
-            $db->rollBack();
+            $db->exec('ROLLBACK');
             return $referenceMessage;
         }
 
         $db->prepare("DELETE FROM {$table} WHERE id = ? AND user_id = ?")->execute([$rowId, $userId]);
-        $db->commit();
+        $db->exec('COMMIT');
 
         return null;
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
+        try {
+            $db->exec('ROLLBACK');
+        } catch (Throwable) {
         }
         if (is_sqlite_busy_error($e)) {
             return $lockedMessage;
@@ -708,21 +709,22 @@ function delay_start_check(PDO $db, int $scopeId, bool $isCampaign, string $ip, 
         $seen = (int) $stmt->fetchColumn() > 0;
 
         if ($seen) {
-            $db->commit();
+            $db->exec('COMMIT');
             return ($permanent || $count < $limit) ? 'delay_start' : '';
         }
 
         if ($count < $limit) {
             $db->prepare("INSERT INTO delay_ips ({$col}, ip_hash) VALUES (?, ?)")->execute([$scopeId, $hash]);
-            $db->commit();
+            $db->exec('COMMIT');
             return 'delay_start';
         }
 
-        $db->commit();
+        $db->exec('COMMIT');
         return '';
     } catch (Throwable $e) {
-        if ($db->inTransaction()) {
-            $db->rollBack();
+        try {
+            $db->exec('ROLLBACK');
+        } catch (Throwable) {
         }
         throw $e;
     }
