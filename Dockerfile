@@ -10,7 +10,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && a2enmod rewrite expires headers \
     && sed -ri 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf \
-    && docker-php-ext-install pdo_sqlite opcache
+    # pdo_sqlite, sqlite3 and opcache are compiled into the official php image;
+    # fail the build early if a future base image drops them.
+    && php -m | grep -qx pdo_sqlite \
+    && php -m | grep -qx 'Zend OPcache'
 
 WORKDIR /var/www/html
 
