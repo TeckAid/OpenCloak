@@ -114,7 +114,7 @@ $activeNav = '/admin/links.php';
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Links - Cloaking SaaS</title>
-    <link rel="stylesheet" href="/assets/css/admin.css">
+    <link rel="stylesheet" href="/assets/css/admin.css?v=20260905">
 </head>
 <body>
     <?php include __DIR__ . '/_nav.php'; ?>
