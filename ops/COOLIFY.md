@@ -33,8 +33,36 @@ curl -s -X POST -H "Authorization: Bearer $COOLIFY_TOKEN" \
   'https://ubuntu-coolify.taild91939.ts.net/api/v1/deploy?uuid=intavgn5d5ojfwkjeata1opu'
 ```
 
-Before any schema change, take a backup on the host first (see `ops/RELEASE.md`),
-then run the migration inside the container:
+### Backup (before any schema change)
+
+`.dockerignore` keeps `ops/` out of the image, so copy the backup script into
+the container and run it there. It uses PHP `VACUUM INTO` (no `sqlite3` CLI
+needed) and writes onto the bind-mounted runtime dir, which is then moved into
+the root-owned backups tree:
+
+```bash
+C=intavgn5d5ojfwkjeata1opu
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+DIG=$(docker image inspect --format '{{.Id}}' "$(docker inspect --format '{{.Config.Image}}' $C)")
+SHA=$(docker inspect --format '{{range .Config.Env}}{{println .}}{{end}}' $C | sed -n 's/^SOURCE_COMMIT=//p')
+git --git-dir=/srv/git/cloaking.git show HEAD:ops/backup_sqlite.sh > /tmp/backup_sqlite.sh
+docker cp /tmp/backup_sqlite.sh $C:/tmp/backup_sqlite.sh
+docker exec -u www-data $C bash /tmp/backup_sqlite.sh \
+  --output=/srv/cloaking/runtime/_bkp_$TS \
+  --config=/var/www/html/config.local.php \
+  --db=/srv/cloaking/runtime/cloaking.sqlite \
+  --app-key=/srv/cloaking/runtime/app.key \
+  --migration-target=3 --source-commit=$SHA --image-digest=$DIG
+mkdir -p /srv/cloaking/backups/$TS
+cp -a /srv/cloaking/runtime/_bkp_$TS/. /srv/cloaking/backups/$TS/ && rm -rf /srv/cloaking/runtime/_bkp_$TS
+chown -R root:root /srv/cloaking/backups/$TS && chmod 0700 /srv/cloaking/backups/$TS
+( cd /srv/cloaking/backups/$TS && sha256sum -c SHA256SUMS )
+```
+
+A valid capture writes `cloaking.sqlite`, `app.key`, `config.local.php`,
+`backup-metadata.json` and `SHA256SUMS`, and the checksum verify passes.
+
+Then run the migration inside the container:
 
 ```bash
 docker exec -u www-data intavgn5d5ojfwkjeata1opu \
