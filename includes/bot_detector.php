@@ -136,6 +136,15 @@ class BotDetector
         // is enabled and the request passed through Cloudflare.
         $country = trim((string) ($context['cf_ipcountry'] ?? ''));
         $asn = trim((string) ($context['cf_ipasn'] ?? ''));
+        // Normalize a bare numeric ASN (request.cf.asn) to the ASxxxxx form
+        if ($asn !== '' && preg_match('/^AS\d{1,10}$/i', $asn) !== 1) {
+            if (preg_match('/^\d{1,10}$/', $asn) === 1) {
+                $asn = 'AS' . $asn;
+            } else {
+                $asn = '';
+            }
+        }
+        $asn = strtoupper($asn);
         if ($country === '' && $asn === '' && function_exists('app_cloudflare_headers')) {
             $serverCf = app_cloudflare_headers();
             $country = $serverCf['country'];

@@ -238,6 +238,11 @@ function app_cloudflare_headers(): array
             $asn = $candidate;
             break;
         }
+        // Some edge workers forward the bare numeric ASN (request.cf.asn)
+        if (preg_match('/^\d{1,10}$/', $candidate) === 1) {
+            $asn = 'AS' . $candidate;
+            break;
+        }
     }
 
     return ['country' => $country, 'asn' => $asn];
