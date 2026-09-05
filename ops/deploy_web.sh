@@ -97,6 +97,17 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
 SOURCE_COMMIT="$(git rev-parse HEAD)"
 [[ "${SOURCE_COMMIT}" =~ ^[a-f0-9]{40}$ ]] || { echo "Error: cannot resolve commit." >&2; exit 1; }
 
+# Path defaults and compose settings (process-local; safe for dry-run too)
+compose=("docker" "compose" "-f" "${repo_dir}/docker-compose.yml" "--project-directory" "${repo_dir}")
+export CLOAKING_CONFIG_PATH="${config_path}"
+if [[ -n "${runtime_path}" ]]; then
+  export CLOAKING_RUNTIME_PATH="${runtime_path}"
+  : "${db_path:="${runtime_path}/cloaking.sqlite"}"
+  : "${app_key_path:="${runtime_path}/app.key"}"
+fi
+: "${db_path:="${repo_dir}/runtime/cloaking.sqlite"}"
+: "${app_key_path:="$(dirname "${db_path}")/app.key"}"
+
 if [[ "${dry_run}" -eq 1 ]]; then
   echo "[deploy] DRY RUN — no changes will be made."
   echo "[deploy] commit=${SOURCE_COMMIT}"
@@ -112,16 +123,6 @@ if [[ "${EUID}" -ne 0 ]]; then
   echo "Error: run as root (sudo bash ops/deploy_web.sh ...). Runtime and config are root-owned." >&2
   exit 1
 fi
-
-compose=("docker" "compose" "-f" "${repo_dir}/docker-compose.yml" "--project-directory" "${repo_dir}")
-export CLOAKING_CONFIG_PATH="${config_path}"
-if [[ -n "${runtime_path}" ]]; then
-  export CLOAKING_RUNTIME_PATH="${runtime_path}"
-  : "${db_path:="${runtime_path}/cloaking.sqlite"}"
-  : "${app_key_path:="${runtime_path}/app.key"}"
-fi
-: "${db_path:="${repo_dir}/runtime/cloaking.sqlite"}"
-: "${app_key_path:="$(dirname "${db_path}")/app.key"}"
 
 # ---- Password (stdin only) --------------------------------------------------
 admin_password_file=""
