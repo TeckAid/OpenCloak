@@ -137,7 +137,7 @@ $filterQuery = static function (array $overrides) use ($days, $verdict, $source,
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title><?= htmlspecialchars($link['name'] ?: $link['slug']) ?> — Traffic - Cloaking SaaS</title>
-    <link rel="stylesheet" href="/assets/css/admin.css?v=20260905">
+    <link rel="stylesheet" href="/assets/css/admin.css?v=20260906">
 </head>
 <body>
     <?php include __DIR__ . '/_nav.php'; ?>
@@ -330,6 +330,6 @@ $filterQuery = static function (array $overrides) use ($days, $verdict, $source,
         </div>
     </div>
 
-    <script src="/assets/js/admin.js?v=20260905"></script>
+    <script src="/assets/js/admin.js?v=20260906"></script>
 </body>
 </html>

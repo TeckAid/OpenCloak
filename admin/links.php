@@ -132,7 +132,7 @@ $activeNav = '/admin/links.php';
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Links - Cloaking SaaS</title>
-    <link rel="stylesheet" href="/assets/css/admin.css?v=20260905">
+    <link rel="stylesheet" href="/assets/css/admin.css?v=20260906">
 </head>
 <body>
     <?php include __DIR__ . '/_nav.php'; ?>
@@ -407,7 +407,7 @@ $activeNav = '/admin/links.php';
         </div>
     </div>
 
-    <script src="/assets/js/admin.js?v=20260905"></script>
+    <script src="/assets/js/admin.js?v=20260906"></script>
     <script>
     function toggleCampaignFields() {
         var sel = document.getElementById('campaign_id');
