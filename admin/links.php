@@ -120,6 +120,8 @@ $activeNav = '/admin/links.php';
     <?php include __DIR__ . '/_nav.php'; ?>
 
     <div class="container">
+        <h1 class="page-title">Links</h1>
+        <p class="page-intro">Short, cloaked routes to your offers.</p>
         <?php if ($message): ?>
             <div class="alert alert-<?= $messageType ?>"><?= htmlspecialchars($message) ?></div>
         <?php endif; ?>
@@ -260,7 +262,7 @@ $activeNav = '/admin/links.php';
                     </thead>
                     <tbody>
                         <?php if (empty($links)): ?>
-                            <tr><td colspan="10" class="text-center">No links yet. Create one above.</td></tr>
+                            <tr><td colspan="10" class="text-center">No links yet. Create your first — it takes one offer URL.</td></tr>
                         <?php else: ?>
                             <?php foreach ($links as $link): ?>
                                 <?php

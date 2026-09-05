@@ -85,6 +85,8 @@ $activeNav = '/admin/client.php';
     <?php include __DIR__ . '/_nav.php'; ?>
 
     <div class="container">
+        <h1 class="page-title">Client mode</h1>
+        <p class="page-intro">Run verification from your own landing server.</p>
         <div class="card">
             <div class="card-header"><h2>Client Deployment</h2></div>
             <div class="card-body">

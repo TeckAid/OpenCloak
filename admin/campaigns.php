@@ -122,6 +122,8 @@ foreach ($stmt->fetchAll() as $row) {
     <?php include __DIR__ . '/_nav.php'; ?>
 
     <div class="container">
+        <h1 class="page-title">Campaigns</h1>
+        <p class="page-intro">One rule set, every link that shares it.</p>
         <?php if ($message): ?>
             <div class="alert alert-<?= $messageType ?>"><?= htmlspecialchars($message) ?></div>
         <?php endif; ?>
@@ -245,7 +247,7 @@ foreach ($stmt->fetchAll() as $row) {
                     </thead>
                     <tbody>
                         <?php if (empty($campaigns)): ?>
-                            <tr><td colspan="8" class="text-center">No campaigns yet.</td></tr>
+                            <tr><td colspan="8" class="text-center">No campaigns yet. Start with a preset and tune from there.</td></tr>
                         <?php else: ?>
                             <?php foreach ($campaigns as $c): ?>
                                 <tr>

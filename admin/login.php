@@ -69,8 +69,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     <div class="login-container">
         <div class="login-card">
             <div class="login-header">
-                <h1>Cloak</h1>
-                <p>Admin Panel</p>
+                <div class="wordmark">cloak<span class="dot"></span></div>
+                <p>Sign in to your traffic console</p>
             </div>
             <?php if ($rateLimited): ?>
                 <div class="alert alert-error">Too many login attempts. Please try again later.</div>
@@ -90,7 +90,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     <input type="password" id="password" name="password" required
                            autocomplete="current-password">
                 </div>
-                <button type="submit" class="btn btn-primary btn-block">Sign In</button>
+                <button type="submit" class="btn btn-primary btn-block">Sign in</button>
             </form>
         </div>
     </div>

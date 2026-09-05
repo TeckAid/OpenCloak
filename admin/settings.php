@@ -79,6 +79,8 @@ $activeNav = '/admin/settings.php';
     <?php include __DIR__ . '/_nav.php'; ?>
 
     <div class="container">
+        <h1 class="page-title">Settings</h1>
+        <p class="page-intro">Password, API key, and console details.</p>
         <?php if ($forceChange): ?>
             <div class="alert alert-warning">You must change your password before continuing.</div>
         <?php endif; ?>

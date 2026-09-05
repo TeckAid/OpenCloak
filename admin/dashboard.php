@@ -158,6 +158,8 @@ $activeNav = '/admin/dashboard.php';
     <?php include __DIR__ . '/_nav.php'; ?>
 
     <div class="container">
+        <h1 class="page-title">Traffic desk</h1>
+        <p class="page-intro">Every visitor, the decision made, and why.</p>
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-label">Links</div>
@@ -167,22 +169,22 @@ $activeNav = '/admin/dashboard.php';
             <div class="stat-card">
                 <div class="stat-label">Campaigns</div>
                 <div class="stat-value"><?= $campaignCount ?></div>
-                <div class="stat-sub">rule containers</div>
+                <div class="stat-sub">rule sets</div>
             </div>
             <div class="stat-card">
-                <div class="stat-label">Total Hits</div>
+                <div class="stat-label">Hits</div>
                 <div class="stat-value"><?= number_format((int)$stats['total_hits']) ?></div>
-                <div class="stat-sub">All time</div>
+                <div class="stat-sub">all time</div>
             </div>
             <div class="stat-card stat-success">
-                <div class="stat-label">Offer Shows</div>
+                <div class="stat-label">Offer shown</div>
                 <div class="stat-value"><?= number_format((int)$stats['total_offers']) ?></div>
-                <div class="stat-sub"><?= (int)$stats['total_hits'] > 0 ? round((int)$stats['total_offers'] / (int)$stats['total_hits'] * 100, 1) : 0 ?>% of total</div>
+                <div class="stat-sub"><?= (int)$stats['total_hits'] > 0 ? round((int)$stats['total_offers'] / (int)$stats['total_hits'] * 100, 1) : 0 ?>% of traffic</div>
             </div>
             <div class="stat-card stat-warning">
-                <div class="stat-label">White Page Shows</div>
+                <div class="stat-label">Safe page shown</div>
                 <div class="stat-value"><?= number_format((int)$stats['total_white']) ?></div>
-                <div class="stat-sub"><?= (int)$stats['total_hits'] > 0 ? round((int)$stats['total_white'] / (int)$stats['total_hits'] * 100, 1) : 0 ?>% of total</div>
+                <div class="stat-sub"><?= (int)$stats['total_hits'] > 0 ? round((int)$stats['total_white'] / (int)$stats['total_hits'] * 100, 1) : 0 ?>% of traffic</div>
             </div>
         </div>
 
@@ -289,7 +291,7 @@ $activeNav = '/admin/dashboard.php';
                     </thead>
                     <tbody>
                         <?php if (empty($recentHits)): ?>
-                            <tr><td colspan="11" class="text-center">No hits yet</td></tr>
+                            <tr><td colspan="11" class="text-center">No traffic yet — open a link to start the log</td></tr>
                         <?php else: ?>
                             <?php foreach ($recentHits as $hit): ?>
                                 <tr>

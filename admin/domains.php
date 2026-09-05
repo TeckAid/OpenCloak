@@ -89,6 +89,8 @@ $activeNav = '/admin/domains.php';
     <?php include __DIR__ . '/_nav.php'; ?>
 
     <div class="container">
+        <h1 class="page-title">Domains</h1>
+        <p class="page-intro">Every hostname your links live on.</p>
         <?php if ($message): ?>
             <div class="alert alert-<?= $messageType ?>"><?= htmlspecialchars($message) ?></div>
         <?php endif; ?>
