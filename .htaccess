@@ -10,6 +10,11 @@ DirectoryIndex index.php
 
 RewriteEngine On
 
+# ---- Dotfile probes (.env, .git/config, ...) → 404, before any routing ------
+# Any path segment beginning with a dot is rejected outright so scanner traffic
+# never reaches PHP. well-known is excepted for ACME/other standard challenges.
+RewriteRule (?:^|/)\.(?!well-known/)[^/]* - [R=404,L,NC]
+
 # ---- Deny sensitive paths (first!) ------------------------------------------
 RewriteRule ^(?:data|logs|includes|docs|docker|tests|\.git|\.github|\.superpowers)(?:/|$) - [F,L,NC]
 RewriteRule ^.+\.(?:sqlite(?:-(?:wal|shm|journal))?|sqlite3|db3?|sql|log)$ - [F,L,NC]
@@ -18,6 +23,10 @@ RewriteRule ^.+\.(?:sqlite(?:-(?:wal|shm|journal))?|sqlite3|db3?|sql|log)$ - [F,
 RewriteRule ^admin/?$ /admin/index.php [L]
 
 # ---- API ------------------------------------------------------------------------
+# Guard with !-f so the rewrite target (/api/index.php, itself a real file) is
+# not re-matched on the per-directory rewrite pass, which otherwise loops until
+# Apache aborts with "exceeded the limit of 10 internal redirects" (HTTP 500).
+RewriteCond %{REQUEST_FILENAME} !-f
 RewriteRule ^api(/.*)?$ /api/index.php [L]
 
 # ---- Static assets (pass through) ------------------------------------------------
