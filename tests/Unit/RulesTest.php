@@ -24,6 +24,35 @@ final class RulesTest extends TestCase
         $this->assertFalse(version_at_least('14.9', '14.10'));
     }
 
+        public function test_parse_api_create_defaults_is_active_on_for_links_and_campaigns(): void
+    {
+        $link = parse_link_input([
+            'name' => 'Promo',
+            'slug' => 'promo',
+            'offer_url' => 'https://offers.example/promo',
+        ], [], ['source' => 'api']);
+        $this->assertSame(1, $link['is_active']);
+
+        $campaign = parse_campaign_input([
+            'name' => 'Campaign',
+            'offer_url' => 'https://offers.example/base',
+        ], [], ['source' => 'api']);
+        $this->assertSame(1, $campaign['is_active']);
+
+        // Explicit opt-out still works
+        $inactive = parse_link_input([
+            'name' => 'Draft',
+            'slug' => 'draft',
+            'offer_url' => 'https://offers.example/draft',
+            'is_active' => 0,
+        ], [], ['source' => 'api']);
+        $this->assertSame(0, $inactive['is_active']);
+
+        // Rule flags remain explicit-opt-in (not affected by the change)
+        $this->assertSame(0, $link['block_bots']);
+        $this->assertSame(0, $link['single_visit_only']);
+    }
+
     public function test_parse_campaign_input_rejects_invalid_offer_pool_and_routes(): void
     {
         $this->assertThrows(

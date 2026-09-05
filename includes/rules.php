@@ -342,7 +342,7 @@ function parse_campaign_input(array $input, array $existing = [], array $options
 
     return array_merge([
         'name' => parse_input_string($input, 'name', 255, $existing, $partial),
-        'is_active' => parse_input_flag($input, 'is_active', (int) ($existing['is_active'] ?? 0), $source, $partial),
+        'is_active' => parse_input_flag($input, 'is_active', (int) ($existing['is_active'] ?? 1), $source, $partial, 1),
         'offer_url' => $offerUrl,
         'white_page' => parse_input_raw_string($input, 'white_page', 65535, $existing, $partial),
         'reject_mode' => normalize_reject_mode(parse_input_string($input, 'reject_mode', 32, $existing, $partial, 'white')),
@@ -386,7 +386,7 @@ function parse_link_input(array $input, array $existing = [], array $options = [
         'white_page' => parse_input_raw_string($input, 'white_page', 65535, $existing, $partial),
         'redirect_type' => normalize_redirect_type(parse_input_string($input, 'redirect_type', 32, $existing, $partial, '302')),
         'redirect_delay' => parse_input_int($input, 'redirect_delay', (int) ($existing['redirect_delay'] ?? 0), 0, 30, $partial),
-        'is_active' => parse_input_flag($input, 'is_active', (int) ($existing['is_active'] ?? 0), $source, $partial),
+        'is_active' => parse_input_flag($input, 'is_active', (int) ($existing['is_active'] ?? 1), $source, $partial, 1),
     ], $rules);
 }
 
@@ -456,7 +456,7 @@ function parse_input_raw_string(array $input, string $name, int $maxBytes, array
     return $default;
 }
 
-function parse_input_flag(array $input, string $name, int $default, string $source, bool $partial): int
+function parse_input_flag(array $input, string $name, int $default, string $source, bool $partial, int $createDefault = 0): int
 {
     if ($source === 'form') {
         return app_array_flag($input, $name, $default, $partial);
@@ -466,10 +466,8 @@ function parse_input_flag(array $input, string $name, int $default, string $sour
         return app_array_flag($input, $name, $default, true);
     }
 
-    return $partial ? $default : 0;
-}
-
-function parse_input_int(array $input, string $name, int $default, int $min, int $max, bool $partial): int
+    return $partial ? $default : $createDefault;
+}function parse_input_int(array $input, string $name, int $default, int $min, int $max, bool $partial): int
 {
     return app_array_clamped_int($input, $name, $default, $min, $max, $partial, $name);
 }

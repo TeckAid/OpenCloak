@@ -200,7 +200,7 @@ Authenticate with `Authorization: Bearer {api_key}` (header only).
 # Links
 curl -H "Authorization: Bearer KEY" https://yoursite.com/api/links
 curl -X POST -H "Authorization: Bearer KEY" -H "Content-Type: application/json" \
-  -d '{"name":"My Link","offer_url":"https://example.com/offer","slug":"my-link","campaign_id":1,"domain_id":2}' \
+  -d '{"name":"My Link","offer_url":"https://example.com/offer","slug":"my-link","campaign_id":1,"domain_id":2,"is_active":1}' \
   https://yoursite.com/api/links
 
 # Campaigns (CRUD + clone)
