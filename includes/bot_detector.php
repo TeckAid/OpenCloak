@@ -585,9 +585,9 @@ class BotDetector
     }
 
     /**
-     * Apply validated Cloudflare geo headers (CF-IPCountry / CF-IPASN).
-     * Caller-supplied context values or TRUST_CLOUDFLARE-gated server
-     * headers are read once in the constructor.
+     * Apply validated Cloudflare geo headers (CF-IPCountry, X-Client-ASN /
+     * CF-IPASN). Caller-supplied context values or TRUST_CLOUDFLARE-gated
+     * server headers are read once in the constructor.
      */
     private function applyCloudflareHeaders(): void
     {

@@ -213,6 +213,12 @@ function app_request_context(): array
  * Validated Cloudflare geo headers for the current request.
  * Only populated when TRUST_CLOUDFLARE is enabled and the request passed
  * through Cloudflare (CF-RAY present). Returns ['country' => '', 'asn' => ''].
+ *
+ * Cloudflare sends CF-IPCountry to origins (IP Geolocation / visitor location
+ * headers, all plans). ASN is NOT a standard origin header: operators forward
+ * request.cf.asn through a small edge Worker as `X-Client-ASN`; the app also
+ * accepts `CF-IPASN` where a platform already injects it. Both are trusted
+ * only under the TRUST_CLOUDFLARE + origin-lock contract.
  */
 function app_cloudflare_headers(): array
 {
@@ -224,9 +230,14 @@ function app_cloudflare_headers(): array
     if (preg_match('/^[A-Z]{2}$/', $country) !== 1) {
         $country = '';
     }
-    $asn = strtoupper(trim((string) ($_SERVER['HTTP_CF_IPASN'] ?? '')));
-    if (preg_match('/^AS\d{1,10}$/', $asn) !== 1) {
-        $asn = '';
+
+    $asn = '';
+    foreach (['HTTP_X_CLIENT_ASN', 'HTTP_CF_IPASN'] as $headerKey) {
+        $candidate = strtoupper(trim((string) ($_SERVER[$headerKey] ?? '')));
+        if (preg_match('/^AS\d{1,10}$/', $candidate) === 1) {
+            $asn = $candidate;
+            break;
+        }
     }
 
     return ['country' => $country, 'asn' => $asn];

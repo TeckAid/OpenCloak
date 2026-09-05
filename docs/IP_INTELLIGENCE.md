@@ -31,12 +31,16 @@ acceptance and must be recorded in the release ticket.
 
 When the deployment is fronted by Cloudflare with `TRUST_CLOUDFLARE` enabled
 (which requires an origin firewall that accepts traffic only from Cloudflare's
-published IP ranges), validated `CF-IPCountry` and `CF-IPASN` headers satisfy
-geo and ASN rules without an adapter call. Proxy/hosting flags still require
-the adapter, so `block_vpn` rules always hit the configured intelligence
-endpoint. Fail-closed semantics are unchanged: if Cloudflare headers are
-absent and a rule needs country data, an unavailable adapter still denies with
-`ip_intelligence_unavailable` unless `open` mode was explicitly accepted.
+published IP ranges), the validated `CF-IPCountry` header satisfies country
+rules without an adapter call. Cloudflare does not send ASN as a standard
+origin header; operators forward `request.cf.asn` through an edge Worker as
+`X-Client-ASN`, which the app validates and uses for ASN-based rules
+(`block_datacenters`, `block_review_infra`) under the same trust contract.
+Proxy/hosting flags still require the adapter, so `block_vpn` rules always hit
+the configured intelligence endpoint. Fail-closed semantics are unchanged: if
+Cloudflare headers are absent and a rule needs country data, an unavailable
+adapter still denies with `ip_intelligence_unavailable` unless `open` mode was
+explicitly accepted.
 
 Before production use, an authorized privacy/legal reviewer must record the
 lawful basis, vendor and DPA/subprocessor approval, allowed processing regions,

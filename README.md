@@ -256,15 +256,31 @@ styles are supported:
    challenge pages to ad-platform reviewers.
 4. Enable `TRUST_CLOUDFLARE = true` in `config.local.php` **and lock the
    origin firewall to Cloudflare's published IP ranges only**. This activates
-   validated `CF-Connecting-IP` (correct client IPs), `CF-IPCountry`, and
-   `CF-IPASN` headers — country and ASN rules then evaluate from the edge
-   without an IP-intelligence adapter round trip. VPN/proxy flags still use
-   the configured adapter (see [docs/IP_INTELLIGENCE.md](docs/IP_INTELLIGENCE.md)).
+   validated `CF-Connecting-IP` (correct client IPs) and `CF-IPCountry`
+   (visitor country; IP Geolocation / "Add visitor location headers" Managed
+   Transform, available on all plans) — country rules then evaluate from the
+   edge without an IP-intelligence adapter round trip. VPN/proxy flags still
+   use the configured adapter (see [docs/IP_INTELLIGENCE.md](docs/IP_INTELLIGENCE.md)).
    If you cannot lock the origin firewall, leave `TRUST_CLOUDFLARE` off and
    list Cloudflare ranges in `TRUSTED_PROXIES` instead (geo headers are then
    ignored, not trusted).
-5. `CF-IPASN` is sent to origins when Cloudflare Managed Transforms are
-   enabled (default for most zones).
+5. **ASN is not a standard Cloudflare origin header.** To get visitor ASN to
+   the origin (for `block_datacenters` / `block_review_infra`), deploy the
+   tiny edge Worker below and attach it to `cloak.yourdomain.com/*`. It reads
+   `request.cf.asn` (available in Workers on all plans) and injects
+   `X-Client-ASN: AS13335`, which the app trusts under the same origin-lock
+   contract:
+
+   ```js
+   export default {
+     async fetch(request) {
+       const headers = new Headers(request.headers);
+       const asn = request.cf && request.cf.asn ? `AS${request.cf.asn}` : null;
+       if (asn) headers.set('X-Client-ASN', asn);
+       return fetch(new Request(request, { headers }));
+     },
+   };
+   ```
 
 ### Customer custom domains (Cloudflare for SaaS)
 
