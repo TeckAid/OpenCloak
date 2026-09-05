@@ -249,12 +249,12 @@ $filterQuery = static function (array $overrides) use ($days, $verdict, $source,
                     <thead>
                         <tr>
                             <th>Time</th><th>Verdict</th><th>Source</th><th>Country</th>
-                            <th>Device</th><th>OS</th><th>Client</th><th>Reason</th><th>IP</th>
+                            <th>Device</th><th>Browser</th><th>OS</th><th>Client</th><th>Reason</th><th>IP</th>
                         </tr>
                     </thead>
                     <tbody>
                         <?php if (empty($hits)): ?>
-                            <tr><td colspan="9" class="text-center">No traffic matches these filters.</td></tr>
+                            <tr><td colspan="10" class="text-center">No traffic matches these filters.</td></tr>
                         <?php else: ?>
                             <?php foreach ($hits as $hit): ?>
                                 <tr>
@@ -267,6 +267,7 @@ $filterQuery = static function (array $overrides) use ($days, $verdict, $source,
                                     <td><?= htmlspecialchars($hit['source'] ?: '—') ?></td>
                                     <td><?= htmlspecialchars($hit['country'] ?: '—') ?></td>
                                     <td><?= htmlspecialchars($hit['device_type'] ?: '—') ?></td>
+                                    <td><?= htmlspecialchars($hit['browser'] ?: '—') ?></td>
                                     <td><?= htmlspecialchars(trim(($hit['os_name'] ?? '') . ' ' . ($hit['os_version'] ?? ''))) ?></td>
                                     <td><?= htmlspecialchars($hit['client_type'] ?: 'browser') ?></td>
                                     <td><?= htmlspecialchars($hit['reject_reason'] ?: '—') ?></td>

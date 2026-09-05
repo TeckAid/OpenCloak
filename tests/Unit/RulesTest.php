@@ -194,4 +194,47 @@ final class RulesTest extends TestCase
     {
         $db->exec('PRAGMA busy_timeout = ' . (int) $milliseconds);
     }
+
+    public function test_filter_list_check_black_and_white_semantics(): void
+    {
+        $db = DatabaseFixture::fresh();
+        $db->prepare("INSERT INTO users (id, username, password, api_key, must_change_password) VALUES (1, ?, ?, ?, 0)")
+           ->execute(["t", "x", "k"]);
+        $db->prepare("INSERT INTO filter_lists (id, user_id, name, list_type, list_ips, list_agents, list_providers, list_referers)
+                      VALUES (1, 1, ?, ?, ?, ?, ?, ?)")
+           ->execute(["Black Spy", "black", "203.0.113.0/24", "puppeteer", "", "evil.example"]);
+        $db->prepare("INSERT INTO filter_lists (id, user_id, name, list_type, list_ips, list_agents, list_providers, list_referers)
+                      VALUES (2, 1, ?, ?, ?, ?, ?, ?)")
+           ->execute(["White TikTok", "white", "198.51.100.0/24", "", "", "tiktok.com"]);
+
+        // Black list: IP match denies
+        $this->assertSame("black_list", filter_list_check($db, 1, 1, "203.0.113.77", "Mozilla/5.0", "", ""));
+        // Black list: UA match denies
+        $this->assertSame("black_list", filter_list_check($db, 1, 1, "8.8.8.8", "Puppeteer/1.0", "", ""));
+        // Black list: referer match denies
+        $this->assertSame("black_list", filter_list_check($db, 1, 1, "8.8.8.8", "Mozilla/5.0", "https://evil.example/x", ""));
+        // Black list: no match passes
+        $this->assertSame("", filter_list_check($db, 1, 1, "8.8.8.8", "Mozilla/5.0", "https://ok.example", ""));
+
+        // White list: matching referer passes
+        $this->assertSame("", filter_list_check($db, 2, 1, "8.8.8.8", "Mozilla/5.0", "https://tiktok.com/v", ""));
+        // White list: no match denies
+        $this->assertSame("white_list", filter_list_check($db, 2, 1, "8.8.8.8", "Mozilla/5.0", "https://other.example", ""));
+
+        // Deleted lists never apply
+        $db->prepare("UPDATE filter_lists SET is_deleted = 1 WHERE id = 1")->execute();
+        $this->assertSame("", filter_list_check($db, 1, 1, "203.0.113.77", "Mozilla/5.0", "", ""));
+    }
+
+    public function test_ip_clicks_per_day_cap_counts_and_denies(): void
+    {
+        $db = DatabaseFixture::fresh();
+        $this->assertTrue(ip_clicks_per_day_check($db, true, 1, "198.51.100.10", 2));
+        $this->assertTrue(ip_clicks_per_day_check($db, true, 1, "198.51.100.10", 2));
+        $this->assertFalse(ip_clicks_per_day_check($db, true, 1, "198.51.100.10", 2));
+        // Different scope (link) has its own budget
+        $this->assertTrue(ip_clicks_per_day_check($db, false, 1, "198.51.100.10", 2));
+        // Zero limit disables the check
+        $this->assertTrue(ip_clicks_per_day_check($db, true, 1, "203.0.113.99", 0));
+    }
 }

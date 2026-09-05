@@ -238,6 +238,8 @@ const RULE_COLUMNS = [
     'offer_method', 'forward_utms', 'no_cache', 'fast_mode',
     'delay_start', 'delay_permanent', 'allow_geo_override',
     'ip_allowlist',
+    'allowed_browsers', 'blocked_browsers', 'ip_blocklist',
+    'ip_clicks_per_day', 'clicks_before_filtering', 'filter_id',
 ];
 
 const FLAG_COLUMNS = [
@@ -263,6 +265,8 @@ const CAMPAIGN_MUTABLE_COLUMNS = [
     'offer_urls', 'rotation_mode', 'offer_routes',
     'offer_method', 'forward_utms', 'no_cache', 'fast_mode', 'delay_start', 'delay_permanent', 'allow_geo_override',
     'ip_allowlist', 'block_ipv6',
+    'allowed_browsers', 'blocked_browsers', 'ip_blocklist',
+    'ip_clicks_per_day', 'clicks_before_filtering', 'filter_id',
 ];
 
 const LINK_MUTABLE_COLUMNS = [
@@ -276,6 +280,8 @@ const LINK_MUTABLE_COLUMNS = [
     'offer_urls', 'rotation_mode', 'offer_routes',
     'offer_method', 'forward_utms', 'no_cache', 'fast_mode', 'delay_start', 'delay_permanent', 'allow_geo_override',
     'ip_allowlist', 'block_ipv6',
+    'allowed_browsers', 'blocked_browsers', 'ip_blocklist',
+    'ip_clicks_per_day', 'clicks_before_filtering', 'filter_id',
 ];
 
 /**
@@ -412,8 +418,38 @@ function parse_rule_input(array $input, array $existing, string $source, bool $p
             continue;
         }
 
+        if ($column === 'filter_id') {
+            $out[$column] = max(0, (int) ($input[$column] ?? $existing[$column] ?? 0));
+            continue;
+        }
+
+        if ($column === 'ip_clicks_per_day') {
+            $out[$column] = max(0, min(10000, (int) ($input[$column] ?? $existing[$column] ?? 0)));
+            continue;
+        }
+
+        if ($column === 'clicks_before_filtering') {
+            $out[$column] = max(0, min(100000, (int) ($input[$column] ?? $existing[$column] ?? 0)));
+            continue;
+        }
+
         if ($column === 'delay_start') {
             $out[$column] = parse_input_int($input, $column, (int) ($existing[$column] ?? 0), 0, 100000, $partial);
+            continue;
+        }
+
+        if ($column === 'ip_clicks_per_day') {
+            $out[$column] = parse_input_int($input, $column, (int) ($existing[$column] ?? 0), 0, 10000, $partial);
+            continue;
+        }
+
+        if ($column === 'clicks_before_filtering') {
+            $out[$column] = parse_input_int($input, $column, (int) ($existing[$column] ?? 0), 0, 100000, $partial);
+            continue;
+        }
+
+        if ($column === 'filter_id') {
+            $out[$column] = parse_input_int($input, $column, (int) ($existing[$column] ?? 0), 0, PHP_INT_MAX, $partial);
             continue;
         }
 
@@ -734,6 +770,90 @@ function delay_start_check(PDO $db, int $scopeId, bool $isCampaign, string $ip, 
  * Derive a traffic source label for analytics:
  * client type > utm_source > referer host > direct.
  */
+/**
+ * Apply an attached reusable filter list (black/white) to a visitor.
+ * Returns a deny reason or '' when the visitor passes.
+ *
+ * - black list: deny when the visitor matches ANY entry
+ * - white list: deny when the visitor matches NO entry across all categories
+ */
+function filter_list_check(PDO $db, int $listId, int $userId, string $ip, string $userAgent, string $referer, string $isp): string
+{
+    if ($listId <= 0) {
+        return '';
+    }
+
+    $stmt = $db->prepare("SELECT * FROM filter_lists WHERE id = ? AND user_id = ? AND is_deleted = 0");
+    $stmt->execute([$listId, $userId]);
+    $list = $stmt->fetch();
+    if (!$list) {
+        return '';
+    }
+
+    $ua = strtolower($userAgent);
+    $ref = strtolower($referer);
+    $ispLow = strtolower($isp);
+
+    $matches = function (string $csv, callable $test) use ($ua, $ref, $ispLow): bool {
+        foreach (preg_split('/[\r\n,]+/', $csv) ?: [] as $entry) {
+            $entry = trim($entry);
+            if ($entry === '') continue;
+            if ($test($entry)) return true;
+        }
+        return false;
+    };
+
+    $matched = false;
+    $matched = $matched || $matches((string)$list['list_ips'], static fn(string $entry): bool => app_ip_matches_cidr($ip, $entry));
+    $matched = $matched || $matches((string)$list['list_agents'], static fn(string $entry): bool => stripos($ua, strtolower($entry)) !== false);
+    $matched = $matched || $matches((string)$list['list_referers'], static fn(string $entry): bool => $entry === '*' || stripos($ref, strtolower($entry)) !== false);
+    $matched = $matched || $matches((string)$list['list_providers'], static fn(string $entry): bool => $ispLow !== '' && stripos($ispLow, strtolower($entry)) !== false);
+
+    if ($list['list_type'] === 'white') {
+        return $matched ? '' : 'white_list';
+    }
+    return $matched ? 'black_list' : '';
+}
+
+/**
+ * Per-IP daily click cap. Counts every evaluated hit for the scope
+ * (link or campaign) and denies once the limit is exceeded. Returns true
+ * when the visitor is allowed to continue.
+ */
+function ip_clicks_per_day_check(PDO $db, bool $isCampaign, int $scopeId, string $ip, int $limit): bool
+{
+    if ($limit <= 0 || $ip === '') {
+        return true;
+    }
+
+    $scope = ($isCampaign ? 'campaign:' : 'link:') . $scopeId;
+    $hash = hash('sha256', $ip);
+    $day = gmdate('Y-m-d');
+
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $stmt = $db->prepare("SELECT count FROM ip_daily WHERE scope = ? AND ip_hash = ? AND day = ?");
+        $stmt->execute([$scope, $hash, $day]);
+        $count = (int)($stmt->fetchColumn() ?: 0);
+
+        $allowed = $count < $limit;
+        $next = $count + 1;
+        $db->prepare(
+            "INSERT INTO ip_daily (scope, ip_hash, day, count) VALUES (?, ?, ?, ?)
+             ON CONFLICT(scope, ip_hash, day) DO UPDATE SET count = excluded.count"
+        )->execute([$scope, $hash, $day, $next]);
+        $db->exec('COMMIT');
+
+        return $allowed;
+    } catch (Throwable $e) {
+        try {
+            $db->exec('ROLLBACK');
+        } catch (Throwable) {
+        }
+        throw $e;
+    }
+}
+
 function derive_source(string $referer, string $clientType, string $utmSource): string
 {
     if ($clientType !== '') {

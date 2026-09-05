@@ -96,22 +96,71 @@ if ($rules === null) {
         if ($visitorToken !== '' && !app_is_https()) {
             app_abort_request(403, 'HTTPS is required for visitor verification.');
         }
-        $detector = new BotDetector();
-        $evalResult = $detector->evaluate($rules, $fingerprint, $tokenPresent);
-        $detectionResult = $detector->getResult();
 
-        // Delay-start filter: block the first N unique IPs (launch protection).
-        // Runs after the main evaluation; adds its reason when triggered.
-        if (!empty($rules['delay_start']) && $evalResult['allowed']) {
-            $delayReason = delay_start_check(
-                $db,
-                !empty($link['campaign_id']) ? (int)$link['campaign_id'] : (int)$link['id'],
-                !empty($link['campaign_id']),
-                app_client_ip(),
-                $rules
-            );
-            if ($delayReason !== '') {
-                $evalResult = ['allowed' => false, 'reasons' => [$delayReason]];
+        $clientIp = app_client_ip();
+        $warmupBypass = false;
+
+        // Clicks-before-filtering: the first N visits bypass every filter
+        // (reference: CH filter_clicks_before_filtering)
+        if ((int)($rules['clicks_before_filtering'] ?? 0) > 0
+            && (int)($rules['total_hits'] ?? 0) < (int)$rules['clicks_before_filtering']) {
+            $warmupBypass = true;
+        }
+
+        // Per-IP daily click cap (reference: CH filter_ip_clicks_per_day)
+        $ipLimit = (int)($rules['ip_clicks_per_day'] ?? 0);
+        $ipLimited = !$warmupBypass && !ip_clicks_per_day_check(
+            $db,
+            $scopeKind === 'campaign',
+            $scopeId,
+            $clientIp,
+            $ipLimit
+        );
+
+        if ($warmupBypass) {
+            $detector = new BotDetector();
+            $detector->detect(['datacenter' => false, 'tor' => false, 'dns' => false]);
+            $detectionResult = $detector->getResult();
+            $evalResult = ['allowed' => true, 'reasons' => []];
+        } elseif ($ipLimited) {
+            $detector = new BotDetector();
+            $detector->detect(['datacenter' => false, 'tor' => false, 'dns' => false]);
+            $detectionResult = $detector->getResult();
+            $evalResult = ['allowed' => false, 'reasons' => ['ip_clicks_per_day']];
+        } else {
+            $detector = new BotDetector();
+            $evalResult = $detector->evaluate($rules, $fingerprint, $tokenPresent);
+            $detectionResult = $detector->getResult();
+
+            // Delay-start filter: block the first N unique IPs (launch protection).
+            // Runs after the main evaluation; adds its reason when triggered.
+            if (!empty($rules['delay_start']) && $evalResult['allowed']) {
+                $delayReason = delay_start_check(
+                    $db,
+                    !empty($link['campaign_id']) ? (int)$link['campaign_id'] : (int)$link['id'],
+                    !empty($link['campaign_id']),
+                    $clientIp,
+                    $rules
+                );
+                if ($delayReason !== '') {
+                    $evalResult = ['allowed' => false, 'reasons' => [$delayReason]];
+                }
+            }
+
+            // Attached reusable filter list (black/white)
+            if ($evalResult['allowed'] && !empty($rules['filter_id'])) {
+                $listReason = filter_list_check(
+                    $db,
+                    (int)$rules['filter_id'],
+                    (int)$link['user_id'],
+                    $clientIp,
+                    (string)($_SERVER['HTTP_USER_AGENT'] ?? ''),
+                    (string)($_SERVER['HTTP_REFERER'] ?? ''),
+                    (string)($detectionResult['isp'] ?? '')
+                );
+                if ($listReason !== '') {
+                    $evalResult = ['allowed' => false, 'reasons' => [$listReason]];
+                }
             }
         }
 
@@ -168,6 +217,7 @@ if (defined('LOG_ENABLED') && LOG_ENABLED) {
         'os_version' => $detectionResult['os_version'] ?? '',
         'client_type' => $detectionResult['client_type'] ?? '',
         'source' => $source,
+        'browser' => $detectionResult['browser'] ?? '',
         'is_bot' => !empty($detectionResult['is_bot']),
         'is_vpn' => !empty($detectionResult['is_vpn']),
         'is_datacenter' => !empty($detectionResult['is_datacenter']),

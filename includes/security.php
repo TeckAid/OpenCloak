@@ -476,12 +476,18 @@ function app_fetch_ip_intelligence(string $ip, ?callable $transport = null): ?ar
         return null;
     }
 
+    $isp = is_string($decoded['isp'] ?? null) ? trim($decoded['isp']) : '';
+    if (strlen($isp) > 255) {
+        $isp = '';
+    }
+
     return [
         'ip' => $normalizedIp,
         'asn' => $asn,
         'country_code' => $countryCode,
         'is_proxy' => $decoded['is_proxy'],
         'is_hosting' => $decoded['is_hosting'],
+        'isp' => $isp,
     ];
 }
 

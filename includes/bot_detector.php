@@ -39,6 +39,8 @@ class BotDetector
         'os_name'         => '',
         'os_version'      => '',
         'device_type'     => 'desktop',
+        'browser'         => '',
+        'isp'             => '',
         'reasons'         => [],
         'ip_intelligence_status' => 'not_requested',
     ];
@@ -235,6 +237,15 @@ class BotDetector
             }
         }
 
+        // IP blocklist: matched IPs are always denied
+        if (!empty($rules['ip_blocklist'])) {
+            foreach (preg_split('/[,\s]+/', (string) $rules['ip_blocklist']) ?: [] as $entry) {
+                if ($entry !== '' && app_ip_matches_cidr($this->ip, $entry)) {
+                    $deny('ip_blocked');
+                }
+            }
+        }
+
         // IPv6 blocking: ad-platform reviewers often probe over IPv6
         if (!empty($rules['block_ipv6'])
             && filter_var($this->ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
@@ -310,6 +321,17 @@ class BotDetector
             if ($os !== '' && isset($minVersions[$os]) && !version_at_least($result['os_version'], $minVersions[$os])) {
                 $deny('os_version_too_low');
             }
+        }
+
+        // Browser
+        $browser = strtolower((string)($result['browser'] ?? ''));
+        if (!empty($rules['allowed_browsers'])) {
+            $allowed = array_map('strtolower', array_map('trim', explode(',', (string)$rules['allowed_browsers'])));
+            if ($browser === '' || !in_array($browser, $allowed, true))      $deny('browser_not_allowed');
+        }
+        if (!empty($rules['blocked_browsers'])) {
+            $blocked = array_map('strtolower', array_map('trim', explode(',', (string)$rules['blocked_browsers'])));
+            if ($browser !== '' && in_array($browser, $blocked, true))       $deny('browser_blocked');
         }
 
         // Language
@@ -469,7 +491,41 @@ class BotDetector
 
         // Device type (extended)
         $this->result['device_type'] = $this->detectDeviceType($ua);
+        $this->result['browser'] = self::detectBrowser($ua);
         $this->result['language'] = strtolower(substr($this->envStr('language', $this->envStr('HTTP_ACCEPT_LANGUAGE', '')), 0, 2));
+    }
+
+    /**
+     * Best-effort browser family from the user agent.
+     */
+    public static function detectBrowser(string $ua): string
+    {
+        $low = strtolower($ua);
+        if (strpos($low, 'edg/') !== false || strpos($low, 'edga/') !== false || strpos($low, 'edgios/') !== false) {
+            return 'edge';
+        }
+        if (strpos($low, 'opr/') !== false || strpos($low, 'opera') !== false || strpos($low, 'opt/') !== false) {
+            return 'opera';
+        }
+        if (strpos($low, 'samsungbrowser') !== false) {
+            return 'samsung';
+        }
+        if (strpos($low, 'firefox') !== false || strpos($low, 'fxios') !== false) {
+            return 'firefox';
+        }
+        if (strpos($low, 'crios') !== false || strpos($low, 'chrome') !== false || strpos($low, 'crmo') !== false) {
+            return 'chrome';
+        }
+        if (strpos($low, 'safari') !== false) {
+            return 'safari';
+        }
+        if (strpos($low, 'ucbrowser') !== false || strpos($low, 'ucweb') !== false) {
+            return 'uc';
+        }
+        if (strpos($low, 'brave') !== false) {
+            return 'brave';
+        }
+        return '';
     }
 
     private function detectDeviceType(string $ua): string
@@ -606,6 +662,9 @@ class BotDetector
         }
         if ($this->result['country'] === '') {
             $this->result['country'] = (string) ($data['country_code'] ?? '');
+        }
+        if ($this->result['isp'] === '' && isset($data['isp'])) {
+            $this->result['isp'] = (string) $data['isp'];
         }
     }
 

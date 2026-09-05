@@ -7,7 +7,7 @@ authentication. Requests are JSON POST bodies containing only the normalized
 visitor IP; credentials and IPs are never placed in URLs.
 
 The adapter response is accepted only when it is JSON with this exact semantic
-shape:
+shape (the optional `isp` string is used for ISP filter-list matching):
 
 ```json
 {
@@ -15,7 +15,8 @@ shape:
   "asn": "AS64500",
   "country_code": "US",
   "is_proxy": false,
-  "is_hosting": false
+  "is_hosting": false,
+  "isp": "Example Residential ISP"
 }
 ```
 

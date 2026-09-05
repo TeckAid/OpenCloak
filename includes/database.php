@@ -85,6 +85,19 @@ function get_database_migrations(): array
                 $db->exec('ALTER TABLE campaigns DROP COLUMN ip_allowlist');
             },
         ],
+        5 => [
+            'file' => $dir . DIRECTORY_SEPARATOR . '005_filters_and_rules.sql',
+            'down' => static function (PDO $db): void {
+                foreach (['allowed_browsers', 'blocked_browsers', 'ip_blocklist',
+                          'ip_clicks_per_day', 'clicks_before_filtering', 'filter_id'] as $col) {
+                    $db->exec("ALTER TABLE links DROP COLUMN {$col}");
+                    $db->exec("ALTER TABLE campaigns DROP COLUMN {$col}");
+                }
+                $db->exec('ALTER TABLE hit_log DROP COLUMN browser');
+                $db->exec('DROP TABLE IF EXISTS ip_daily');
+                $db->exec('DROP TABLE IF EXISTS filter_lists');
+            },
+        ],
     ];
 }
 
@@ -695,9 +708,9 @@ function record_hit(PDO $db, array $hit, bool $showOffer): void
     try {
         $db->prepare("
             INSERT INTO hit_log (link_id, campaign_id, host, ip, user_agent, referer, language, country,
-                                 device_type, os_name, os_version, client_type, source,
+                                 device_type, os_name, os_version, client_type, source, browser,
                                  is_bot, is_vpn, is_datacenter, shown_page, reject_reason)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ")->execute([
             $linkId,
             $campaignId,
@@ -712,6 +725,7 @@ function record_hit(PDO $db, array $hit, bool $showOffer): void
             (string) ($hit['os_version'] ?? ''),
             (string) ($hit['client_type'] ?? ''),
             (string) ($hit['source'] ?? ''),
+            (string) ($hit['browser'] ?? ''),
             !empty($hit['is_bot']) ? 1 : 0,
             !empty($hit['is_vpn']) ? 1 : 0,
             !empty($hit['is_datacenter']) ? 1 : 0,

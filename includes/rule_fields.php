@@ -121,6 +121,58 @@ if (!defined('DEVICE_TYPES')) {
 </details>
 
 <details>
+    <summary><h3 style="display:inline">Browser Rules</h3></summary>
+    <div class="form-row">
+        <div class="form-group">
+            <label>Allowed Browsers</label>
+            <input type="text" name="allowed_browsers" value="<?= htmlspecialchars($r['allowed_browsers'] ?? '') ?>" placeholder="chrome,safari">
+        </div>
+        <div class="form-group">
+            <label>Blocked Browsers</label>
+            <input type="text" name="blocked_browsers" value="<?= htmlspecialchars($r['blocked_browsers'] ?? '') ?>" placeholder="firefox">
+        </div>
+    </div>
+    <p class="form-hint">Values: chrome, safari, firefox, edge, opera, samsung, uc, brave.</p>
+</details>
+
+<details>
+    <summary><h3 style="display:inline">Frequency & Warm-up</h3></summary>
+    <div class="form-row">
+        <div class="form-group">
+            <label>Max clicks per IP per day (0 = off)</label>
+            <input type="number" name="ip_clicks_per_day" min="0" max="10000" value="<?= (int)($r['ip_clicks_per_day'] ?? 0) ?>">
+        </div>
+        <div class="form-group">
+            <label>First N clicks bypass filters (0 = off)</label>
+            <input type="number" name="clicks_before_filtering" min="0" max="100000" value="<?= (int)($r['clicks_before_filtering'] ?? 0) ?>">
+            <p class="form-hint">Warm-up mode: let the first visitors through unfiltered while the pixel warms up.</p>
+        </div>
+    </div>
+    <div class="form-row">
+        <div class="form-group">
+            <label>IP Blocklist (one IP or CIDR per line)</label>
+            <textarea name="ip_blocklist" rows="2" placeholder="203.0.113.10&#10;198.51.100.0/24"><?= htmlspecialchars($r['ip_blocklist'] ?? '') ?></textarea>
+        </div>
+        <div class="form-group">
+            <label>Attached filter list</label>
+            <select name="filter_id">
+                <option value="0">None</option>
+                <?php
+                $filterListStmt = getDB()->prepare("SELECT id, name, list_type FROM filter_lists WHERE user_id = ? AND is_deleted = 0 ORDER BY name");
+                $filterListStmt->execute([current_user_id()]);
+                foreach ($filterListStmt->fetchAll() as $fl):
+                ?>
+                    <option value="<?= (int)$fl['id'] ?>" <?= (int)($r['filter_id'] ?? 0) === (int)$fl['id'] ? 'selected' : '' ?>>
+                        <?= htmlspecialchars($fl['name']) ?> (<?= $fl['list_type'] === 'white' ? 'allow' : 'deny' ?>)
+                    </option>
+                <?php endforeach; ?>
+            </select>
+            <p class="form-hint">Reusable IP / UA / referer / ISP lists managed in <a href="/admin/filters.php">Filters</a>.</p>
+        </div>
+    </div>
+</details>
+
+<details>
     <summary><h3 style="display:inline">URL Parameter Rules</h3></summary>
     <div class="form-group">
         <label>Required URL Parameters</label>

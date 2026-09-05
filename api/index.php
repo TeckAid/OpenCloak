@@ -481,10 +481,36 @@ switch ($resource) {
         $eval = $detector->evaluate($campaign, $fingerprint, $tokenPresent);
         $result = $detector->getResult();
 
+        // Warm-up bypass: first N clicks skip every filter
+        $warmupBypass = (int)($campaign['clicks_before_filtering'] ?? 0) > 0
+            && (int)($campaign['total_hits'] ?? 0) < (int)$campaign['clicks_before_filtering'];
+
+        // Per-IP daily click cap
+        $ipLimit = (int)($campaign['ip_clicks_per_day'] ?? 0);
+        if (!$warmupBypass && !ip_clicks_per_day_check($db, true, $campaignId, $ip, $ipLimit)) {
+            $eval = ['allowed' => false, 'reasons' => ['ip_clicks_per_day']];
+        }
+
         if ($eval['allowed'] && !empty($campaign['delay_start'])) {
             $delayReason = delay_start_check($db, $campaignId, true, $ip, $campaign);
             if ($delayReason !== '') {
                 $eval = ['allowed' => false, 'reasons' => [$delayReason]];
+            }
+        }
+
+        // Attached reusable filter list
+        if ($eval['allowed'] && !empty($campaign['filter_id'])) {
+            $listReason = filter_list_check(
+                $db,
+                (int)$campaign['filter_id'],
+                (int)$campaign['user_id'],
+                $ip,
+                $userAgent,
+                $context['referer'],
+                (string)($result['isp'] ?? '')
+            );
+            if ($listReason !== '') {
+                $eval = ['allowed' => false, 'reasons' => [$listReason]];
             }
         }
 
@@ -516,6 +542,7 @@ switch ($resource) {
                 'os_version' => $result['os_version'] ?? '',
                 'client_type' => $result['client_type'] ?? '',
                 'source' => $source,
+                'browser' => $result['browser'] ?? '',
                 'is_bot' => !empty($result['is_bot']),
                 'is_vpn' => !empty($result['is_vpn']),
                 'is_datacenter' => !empty($result['is_datacenter']),
@@ -543,6 +570,210 @@ switch ($resource) {
             'visitor_cookie_name' => is_array($visitorIssue) ? $visitorIssue['name'] : '',
             'visitor_cookie' => is_array($visitorIssue) ? $visitorIssue['value'] : '',
         ]);
+
+    // ============================ FILTER LISTS ================================
+    case 'filter-lists':
+        if ($method === 'GET' && $id === null) {
+            $stmt = $db->prepare("SELECT * FROM filter_lists WHERE user_id = ? ORDER BY is_deleted ASC, created_at DESC");
+            $stmt->execute([$userId]);
+            apiSuccess(['lists' => $stmt->fetchAll()]);
+        }
+
+        if ($method === 'POST' && $id === null) {
+            $input = readJsonBody();
+            $name = trim((string)($input['name'] ?? ''));
+            $listType = (string)($input['list_type'] ?? 'black');
+            if ($name === '' || strlen($name) > 32) {
+                apiError('name is required (max 32 chars).', 400);
+            }
+            if (!in_array($listType, ['white', 'black'], true)) {
+                apiError('list_type must be white or black.', 400);
+            }
+            $db->prepare("INSERT INTO filter_lists (user_id, name, list_type, list_ips, list_agents, list_providers, list_referers)
+                          VALUES (?, ?, ?, ?, ?, ?, ?)")->execute([
+                $userId, $name, $listType,
+                trim((string)($input['list_ips'] ?? '')),
+                trim((string)($input['list_agents'] ?? '')),
+                trim((string)($input['list_providers'] ?? '')),
+                trim((string)($input['list_referers'] ?? '')),
+            ]);
+            $listId = (int)$db->lastInsertId();
+            $stmt = $db->prepare("SELECT * FROM filter_lists WHERE id = ?");
+            $stmt->execute([$listId]);
+            apiSuccess(['list' => $stmt->fetch()], 201);
+        }
+
+        if ($id !== null && ($method === 'GET' || $method === 'PUT' || $method === 'DELETE')) {
+            $stmt = $db->prepare("SELECT * FROM filter_lists WHERE id = ? AND user_id = ?");
+            $stmt->execute([$id, $userId]);
+            $list = $stmt->fetch();
+            if (!$list) apiError('Filter list not found.', 404);
+
+            if ($method === 'GET') {
+                apiSuccess(['list' => $list]);
+            }
+            if ($method === 'DELETE') {
+                $db->prepare("UPDATE filter_lists SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")
+                   ->execute([$id, $userId]);
+                apiSuccess(['message' => 'Filter list deleted']);
+            }
+            if ($method === 'PUT') {
+                $input = readJsonBody();
+                $fields = [];
+                $values = [];
+                foreach (['name', 'list_ips', 'list_agents', 'list_providers', 'list_referers'] as $col) {
+                    if (array_key_exists($col, $input)) {
+                        $fields[] = "{$col} = ?";
+                        $values[] = trim((string)$input[$col]);
+                    }
+                }
+                if (array_key_exists('list_type', $input)) {
+                    if (!in_array((string)$input['list_type'], ['white', 'black'], true)) {
+                        apiError('list_type must be white or black.', 400);
+                    }
+                    $fields[] = 'list_type = ?';
+                    $values[] = (string)$input['list_type'];
+                }
+                if ($fields === []) {
+                    apiError('No fields to update.', 400);
+                }
+                $fields[] = 'updated_at = CURRENT_TIMESTAMP';
+                $db->prepare("UPDATE filter_lists SET " . implode(', ', $fields) . " WHERE id = ? AND user_id = ?")
+                   ->execute(array_merge($values, [$id, $userId]));
+                $stmt = $db->prepare("SELECT * FROM filter_lists WHERE id = ?");
+                $stmt->execute([$id]);
+                apiSuccess(['list' => $stmt->fetch()]);
+            }
+        }
+
+        if ($method === 'POST' && isset($segments[2]) && $segments[2] === 'restore' && $id !== null) {
+            $db->prepare("UPDATE filter_lists SET is_deleted = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")
+               ->execute([$id, $userId]);
+            $stmt = $db->prepare("SELECT * FROM filter_lists WHERE id = ?");
+            $stmt->execute([$id]);
+            apiSuccess(['list' => $stmt->fetch()]);
+        }
+        break;
+
+    // ============================ STATISTICS ==================================
+    case 'statistics':
+        if ($method === 'GET' && $id === null) {
+            $groupBy = (string)($_GET['group_by'] ?? 'date');
+            $allowedGroups = ['date', 'hour', 'day_week', 'flow', 'country', 'device', 'os', 'browser', 'source', 'client'];
+            if (!in_array($groupBy, $allowedGroups, true)) {
+                apiError('group_by must be one of: ' . implode(', ', $allowedGroups) . '.', 400);
+            }
+            $days = (int)($_GET['days'] ?? 7);
+            $days = in_array($days, [1, 7, 30, 0], true) ? $days : 7;
+            $flowId = (int)($_GET['flow_id'] ?? 0);
+
+            $where = ['l.user_id = ?'];
+            $params = [$userId];
+            if ($flowId > 0) {
+                $where[] = 'h.link_id = ?';
+                $params[] = $flowId;
+            }
+            if ($days > 0) {
+                $where[] = "h.created_at >= datetime('now', ?)";
+                $params[] = "-{$days} days";
+            }
+
+            $exprMap = [
+                'date' => "DATE(h.created_at)",
+                'hour' => "strftime('%H', h.created_at)",
+                'day_week' => "strftime('%w', h.created_at)",
+                'flow' => 'COALESCE(l.slug, c.name, \'—\')',
+                'country' => "COALESCE(NULLIF(h.country, ''), '—')",
+                'device' => "COALESCE(NULLIF(h.device_type, ''), '—')",
+                'os' => "COALESCE(NULLIF(h.os_name, ''), '—')",
+                'browser' => "COALESCE(NULLIF(h.browser, ''), '—')",
+                'source' => "COALESCE(NULLIF(h.source, ''), 'direct')",
+                'client' => "COALESCE(NULLIF(h.client_type, ''), 'browser')",
+            ];
+            $expr = $exprMap[$groupBy];
+
+            $stmt = $db->prepare("
+                SELECT {$expr} AS value,
+                       COUNT(*) AS hits,
+                       COUNT(DISTINCT h.ip) AS hosts,
+                       SUM(CASE WHEN h.shown_page = 'offer' THEN 1 ELSE 0 END) AS offers,
+                       SUM(CASE WHEN h.shown_page = 'white' THEN 1 ELSE 0 END) AS safe
+                FROM hit_log h
+                LEFT JOIN links l ON l.id = h.link_id
+                LEFT JOIN campaigns c ON c.id = h.campaign_id
+                WHERE " . implode(' AND ', $where) . "
+                GROUP BY value ORDER BY hits DESC");
+            $stmt->execute($params);
+            $rows = array_map(static function (array $row): array {
+                $row['ctr'] = (int)$row['hits'] > 0
+                    ? round((int)$row['offers'] / (int)$row['hits'] * 100, 1) : 0;
+                return $row;
+            }, $stmt->fetchAll());
+
+            apiSuccess(['group_by' => $groupBy, 'days' => $days, 'rows' => $rows]);
+        }
+        break;
+
+    // ============================ CLICKS ======================================
+    case 'clicks':
+        if ($method === 'GET' && $id === null) {
+            $days = (int)($_GET['days'] ?? 7);
+            $days = in_array($days, [1, 7, 30, 0], true) ? $days : 7;
+            $verdict = (string)($_GET['verdict'] ?? '');
+            $verdict = in_array($verdict, ['offer', 'white'], true) ? $verdict : '';
+            $source = trim((string)($_GET['source'] ?? ''));
+            $reason = trim((string)($_GET['reason'] ?? ''));
+            $flowId = (int)($_GET['flow_id'] ?? 0);
+            $perPage = min(200, max(10, (int)($_GET['per_page'] ?? 50)));
+            $page = max(1, (int)($_GET['page'] ?? 1));
+
+            $where = ['l.user_id = ?'];
+            $params = [$userId];
+            if ($flowId > 0) {
+                $where[] = 'h.link_id = ?';
+                $params[] = $flowId;
+            }
+            if ($days > 0) {
+                $where[] = "h.created_at >= datetime('now', ?)";
+                $params[] = "-{$days} days";
+            }
+            if ($verdict !== '') {
+                $where[] = 'h.shown_page = ?';
+                $params[] = $verdict;
+            }
+            if ($source !== '') {
+                $where[] = 'h.source = ?';
+                $params[] = $source;
+            }
+            if ($reason !== '') {
+                $where[] = 'h.reject_reason LIKE ?';
+                $params[] = '%' . $reason . '%';
+            }
+
+            $stmt = $db->prepare("SELECT COUNT(*) FROM hit_log h LEFT JOIN links l ON l.id = h.link_id LEFT JOIN campaigns c ON c.id = h.campaign_id WHERE " . implode(' AND ', $where));
+            $stmt->execute($params);
+            $total = (int)$stmt->fetchColumn();
+
+            $stmt = $db->prepare("
+                SELECT h.id AS click_id, h.link_id AS flow_id, h.created_at AS time_created,
+                       h.country AS country_code, h.ip AS ip_address, h.referer, h.user_agent,
+                       h.device_type AS device, h.browser, h.os_name AS os, h.client_type AS client,
+                       h.source, h.shown_page AS filter_page, h.reject_reason AS filter_type
+                FROM hit_log h
+                LEFT JOIN links l ON l.id = h.link_id
+                LEFT JOIN campaigns c ON c.id = h.campaign_id
+                WHERE " . implode(' AND ', $where) . "
+                ORDER BY h.created_at DESC, h.id DESC LIMIT ? OFFSET ?");
+            $stmt->execute(array_merge($params, [$perPage, ($page - 1) * $perPage]));
+
+            apiSuccess([
+                'total' => $total,
+                'per_page' => $perPage,
+                'page' => $page,
+                'data' => $stmt->fetchAll(),
+            ]);
+        }
+        break;
 
     case 'stats':
         if (count($segments) !== 2 || $id === null) {

@@ -268,8 +268,7 @@ final class BotDetectorTest extends TestCase
     }
 
     public function test_block_ipv6_denies_ipv6_clients(): void
-    {
-        $detector = new BotDetector(
+    {        $detector = new BotDetector(
             '2001:db8::1',
             'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/140 Safari/537.36',
             ['accept' => 'text/html', 'language' => 'en-US', 'referer' => 'https://example.test'],
@@ -289,5 +288,47 @@ final class BotDetectorTest extends TestCase
 
         $this->assertFalse($evaluation['allowed']);
         $this->assertTrue(in_array('ipv6_blocked', $evaluation['reasons'], true));
+    }
+
+    public function test_browser_detection_and_rules(): void
+    {
+        $this->assertSame('chrome', BotDetector::detectBrowser('Mozilla/5.0 (Macintosh) Chrome/151.0.0.0 Safari/537.36'));
+        $this->assertSame('safari', BotDetector::detectBrowser('Mozilla/5.0 (iPhone) Version/17.0 Mobile/15E148 Safari/604.1'));
+        $this->assertSame('firefox', BotDetector::detectBrowser('Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0'));
+        $this->assertSame('edge', BotDetector::detectBrowser('Mozilla/5.0 (Windows NT 10.0) Edg/125.0.0.0'));
+        $this->assertSame('', BotDetector::detectBrowser('curl/8.4.0'));
+
+        $detector = new BotDetector('198.51.100.20', 'Mozilla/5.0 (Windows NT 10.0) Edg/125.0.0.0', [
+            'accept' => 'text/html', 'language' => 'en-US', 'referer' => 'https://example.test',
+        ], static fn (): false => false);
+        $evaluation = $detector->evaluate([
+            'allowed_browsers' => 'chrome,safari',
+            'block_bots' => 0, 'block_datacenters' => 0, 'block_review_infra' => 0,
+            'block_tor' => 0, 'block_vpn' => 0, 'block_headless' => 0, 'block_curl' => 0, 'fast_mode' => 1,
+        ]);
+        $this->assertFalse($evaluation['allowed']);
+        $this->assertTrue(in_array('browser_not_allowed', $evaluation['reasons'], true));
+
+        $evaluation = $detector->evaluate([
+            'blocked_browsers' => 'edge',
+            'block_bots' => 0, 'block_datacenters' => 0, 'block_review_infra' => 0,
+            'block_tor' => 0, 'block_vpn' => 0, 'block_headless' => 0, 'block_curl' => 0, 'fast_mode' => 1,
+        ]);
+        $this->assertFalse($evaluation['allowed']);
+        $this->assertTrue(in_array('browser_blocked', $evaluation['reasons'], true));
+    }
+
+    public function test_ip_blocklist_denies_listed_ips(): void
+    {
+        $detector = new BotDetector('203.0.113.10', 'Mozilla/5.0 (X11; Linux x86_64) Chrome/140 Safari/537.36', [
+            'accept' => 'text/html', 'language' => 'en-US', 'referer' => 'https://example.test',
+        ], static fn (): false => false);
+        $evaluation = $detector->evaluate([
+            'ip_blocklist' => "198.51.100.0/24\n203.0.113.10",
+            'block_bots' => 0, 'block_datacenters' => 0, 'block_review_infra' => 0,
+            'block_tor' => 0, 'block_vpn' => 0, 'block_headless' => 0, 'block_curl' => 0, 'fast_mode' => 1,
+        ]);
+        $this->assertFalse($evaluation['allowed']);
+        $this->assertTrue(in_array('ip_blocked', $evaluation['reasons'], true));
     }
 }
