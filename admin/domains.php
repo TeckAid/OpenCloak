@@ -62,7 +62,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-$stmt = $db->prepare("SELECT * FROM domains WHERE user_id = ? ORDER BY is_system DESC, created_at ASC");
+$stmt = $db->prepare("SELECT * FROM domains WHERE user_id = ? AND is_deleted = 0 ORDER BY is_system DESC, created_at ASC");
 $stmt->execute([$userId]);
 $domains = $stmt->fetchAll();
 
@@ -129,15 +129,15 @@ $activeNav = '/admin/domains.php';
             <div class="table-responsive">
                 <table class="table">
                     <thead>
-                        <tr><th>Domain</th><th>Type</th><th>Status</th><th>Links</th><th>Added</th><th>Actions</th></tr>
+                        <tr><th>Domain</th><th>Type</th><th>Status</th><th>DNS</th><th>Links</th><th>Actions</th></tr>
                     </thead>
                     <tbody>
                         <tr>
                             <td><code><?= htmlspecialchars($primaryHost) ?></code></td>
                             <td><span class="badge badge-info">System</span></td>
                             <td><span class="badge badge-success">Active</span></td>
-                            <td><?= 0 ?></td>
                             <td>—</td>
+                            <td><?= 0 ?></td>
                             <td>—</td>
                         </tr>
                         <?php if (empty($domains)): ?>
@@ -152,9 +152,22 @@ $activeNav = '/admin/domains.php';
                                             <?= $d['is_active'] ? 'Active' : 'Inactive' ?>
                                         </span>
                                     </td>
-                                    <td><?= $linkCounts[$d['id']] ?? 0 ?></td>
-                                    <td><?= date('M j, Y', strtotime($d['created_at'])) ?></td>
                                     <td>
+                                        <?php if ($d['dns_status'] !== ''): ?>
+                                            <span class="badge <?= $d['dns_status'] === 'connected' ? 'badge-success' : 'badge-danger' ?>"
+                                                  title="<?= htmlspecialchars($d['dns_records'] ?? '') ?>"><?= $d['dns_status'] ?></span>
+                                        <?php else: ?>
+                                            <span class="badge badge-secondary">unchecked</span>
+                                        <?php endif; ?>
+                                    </td>
+                                    <td><?= $linkCounts[$d['id']] ?? 0 ?></td>
+                                    <td>
+                                        <form method="POST" action="" style="display:inline">
+                                            <?= csrf_field() ?>
+                                            <input type="hidden" name="action" value="check_status">
+                                            <input type="hidden" name="id" value="<?= (int)$d['id'] ?>">
+                                            <button type="submit" class="btn btn-sm">Check DNS</button>
+                                        </form>
                                         <form method="POST" action="" style="display:inline">
                                             <?= csrf_field() ?>
                                             <input type="hidden" name="action" value="toggle">

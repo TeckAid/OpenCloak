@@ -147,7 +147,7 @@ switch ($resource) {
                     FROM links l
                     LEFT JOIN campaigns c ON c.id = l.campaign_id
                     LEFT JOIN domains d ON d.id = l.domain_id
-                    WHERE l.user_id = ? ORDER BY l.created_at DESC");
+                    WHERE l.user_id = ? AND l.is_deleted = 0 ORDER BY l.created_at DESC");
                 $stmt->execute([$userId]);
                 apiSuccess(['links' => $stmt->fetchAll()]);
             }
@@ -201,7 +201,7 @@ switch ($resource) {
                 apiSuccess(['link' => $link]);
             }
             if ($method === 'DELETE') {
-                $db->prepare("DELETE FROM links WHERE id = ? AND user_id = ?")->execute([$id, $userId]);
+                $db->prepare("UPDATE links SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")->execute([$id, $userId]);
                 apiSuccess(['message' => 'Link deleted']);
             }
             if ($method !== 'PUT') {
@@ -232,12 +232,25 @@ switch ($resource) {
             apiSuccess(['link' => $stmt->fetch()]);
         }
 
+        if (count($segments) === 3 && $id !== null && $segments[2] === 'restore') {
+            $stmt = $db->prepare("SELECT * FROM links WHERE id = ? AND user_id = ?");
+            $stmt->execute([$id, $userId]);
+            if (!$stmt->fetch()) {
+                apiError('Link not found.', 404);
+            }
+            $db->prepare("UPDATE links SET is_deleted = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")
+               ->execute([$id, $userId]);
+            $stmt = $db->prepare("SELECT * FROM links WHERE id = ?");
+            $stmt->execute([$id]);
+            apiSuccess(['link' => $stmt->fetch()]);
+        }
+
         apiNotFound();
 
     case 'campaigns':
         if (count($segments) === 1) {
             if ($method === 'GET') {
-                $stmt = $db->prepare("SELECT * FROM campaigns WHERE user_id = ? ORDER BY created_at DESC");
+                $stmt = $db->prepare("SELECT * FROM campaigns WHERE user_id = ? AND is_deleted = 0 ORDER BY created_at DESC");
                 $stmt->execute([$userId]);
                 apiSuccess(['campaigns' => $stmt->fetchAll()]);
             }
@@ -340,12 +353,25 @@ switch ($resource) {
             apiSuccess(['campaign' => $stmt->fetch()], 201);
         }
 
+        if (count($segments) === 3 && $id !== null && $segments[2] === 'restore') {
+            $stmt = $db->prepare("SELECT * FROM campaigns WHERE id = ? AND user_id = ?");
+            $stmt->execute([$id, $userId]);
+            if (!$stmt->fetch()) {
+                apiError('Campaign not found.', 404);
+            }
+            $db->prepare("UPDATE campaigns SET is_deleted = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")
+               ->execute([$id, $userId]);
+            $stmt = $db->prepare("SELECT * FROM campaigns WHERE id = ?");
+            $stmt->execute([$id]);
+            apiSuccess(['campaign' => $stmt->fetch()]);
+        }
+
         apiNotFound();
 
     case 'domains':
         if (count($segments) === 1) {
             if ($method === 'GET') {
-                $stmt = $db->prepare("SELECT * FROM domains WHERE user_id = ? ORDER BY is_system DESC, created_at ASC");
+                $stmt = $db->prepare("SELECT * FROM domains WHERE user_id = ? AND is_deleted = 0 ORDER BY is_system DESC, created_at ASC");
                 $stmt->execute([$userId]);
                 apiSuccess(['domains' => $stmt->fetchAll()]);
             }
@@ -403,6 +429,29 @@ switch ($resource) {
             $stmt = $db->prepare("SELECT * FROM domains WHERE id = ?");
             $stmt->execute([$id]);
             apiSuccess(['domain' => $stmt->fetch()]);
+        }
+
+        if (count($segments) === 3 && $id !== null && $segments[2] === 'restore') {
+            $stmt = $db->prepare("SELECT * FROM domains WHERE id = ? AND user_id = ?");
+            $stmt->execute([$id, $userId]);
+            if (!$stmt->fetch()) {
+                apiError('Domain not found.', 404);
+            }
+            $db->prepare("UPDATE domains SET is_deleted = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")
+               ->execute([$id, $userId]);
+            $stmt = $db->prepare("SELECT * FROM domains WHERE id = ?");
+            $stmt->execute([$id]);
+            apiSuccess(['domain' => $stmt->fetch()]);
+        }
+
+        if (count($segments) === 3 && $id !== null && $segments[2] === 'status') {
+            $stmt = $db->prepare("SELECT * FROM domains WHERE id = ? AND user_id = ? AND is_system = 0");
+            $stmt->execute([$id, $userId]);
+            $domainRow = $stmt->fetch();
+            if (!$domainRow) {
+                apiError('Custom domain not found.', 404);
+            }
+            apiSuccess(refresh_domain_status($db, $domainRow));
         }
 
         apiNotFound();
@@ -773,6 +822,25 @@ switch ($resource) {
                 'data' => $stmt->fetchAll(),
             ]);
         }
+        break;
+
+    // ============================ DICTIONARIES ===============================
+    case 'dictionaries':
+        if ($method !== 'GET') {
+            apiMethodNotAllowed();
+        }
+        $type = (string)($_GET['type'] ?? '');
+        if ($type === '') {
+            apiSuccess(['dictionaries' => REFERENCE_DICTIONARIES]);
+        }
+        if (!isset(REFERENCE_DICTIONARIES[$type])) {
+            apiError('Unknown dictionary type: ' . $type, 400);
+        }
+        $entries = [];
+        foreach (REFERENCE_DICTIONARIES[$type] as $value => $label) {
+            $entries[] = ['value' => (string)$value, 'label' => $label];
+        }
+        apiSuccess(['type' => $type, 'entries' => $entries]);
         break;
 
     case 'stats':

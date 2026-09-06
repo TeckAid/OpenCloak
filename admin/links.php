@@ -68,8 +68,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } elseif ($action === 'delete') {
         $id = (int)($_POST['id'] ?? 0);
-        $db->prepare("DELETE FROM links WHERE id = ? AND user_id = ?")->execute([$id, $userId]);
+        $db->prepare("UPDATE links SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")->execute([$id, $userId]);
         $message = 'Link deleted.';
+        $messageType = 'success';
+    } elseif ($action === 'restore') {
+        $id = (int)($_POST['id'] ?? 0);
+        $db->prepare("UPDATE links SET is_deleted = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")->execute([$id, $userId]);
+        $message = 'Link restored.';
         $messageType = 'success';
     }
 }
@@ -88,7 +93,7 @@ $stmt = $db->prepare("
     FROM links l
     LEFT JOIN campaigns c ON c.id = l.campaign_id
     LEFT JOIN domains d ON d.id = l.domain_id
-    WHERE l.user_id = ? ORDER BY l.is_active DESC, l.created_at DESC");
+    WHERE l.user_id = ? AND l.is_deleted = 0 ORDER BY l.is_active DESC, l.created_at DESC");
 $stmt->execute([$userId]);
 $links = $stmt->fetchAll();
 
@@ -123,6 +128,15 @@ $boundCampaign = $editingLink && !empty($editingLink['campaign_id']);
 
 $activeLinks = array_values(array_filter($links, static fn(array $l): bool => (int)$l['is_active'] === 1));
 $inactiveLinks = array_values(array_filter($links, static fn(array $l): bool => (int)$l['is_active'] !== 1));
+
+$stmt = $db->prepare("
+    SELECT l.*, c.name AS campaign_name, d.domain AS domain_name
+    FROM links l
+    LEFT JOIN campaigns c ON c.id = l.campaign_id
+    LEFT JOIN domains d ON d.id = l.domain_id
+    WHERE l.user_id = ? AND l.is_deleted = 1 ORDER BY l.updated_at DESC");
+$stmt->execute([$userId]);
+$deletedLinks = $stmt->fetchAll();
 
 $activeNav = '/admin/links.php';
 ?>
@@ -254,6 +268,39 @@ $activeNav = '/admin/links.php';
                                                 <input type="hidden" name="action" value="delete">
                                                 <input type="hidden" name="id" value="<?= (int)$link['id'] ?>">
                                                 <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            <?php endif; ?>
+
+            <?php if ($deletedLinks !== []): ?>
+                <div class="section-title">
+                    <h2>Deleted</h2>
+                    <span class="count"><?= count($deletedLinks) ?></span>
+                </div>
+                <div class="card">
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr><th>Link</th><th>URL</th><th>Hits</th><th>Actions</th></tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($deletedLinks as $link): ?>
+                                    <tr class="row-inactive">
+                                        <td><?= htmlspecialchars($link['name'] ?: $link['slug']) ?></td>
+                                        <td><code><?= htmlspecialchars($link['slug']) ?></code></td>
+                                        <td><?= number_format((int)$link['total_hits']) ?></td>
+                                        <td>
+                                            <form method="POST" action="" style="display:inline">
+                                                <?= csrf_field() ?>
+                                                <input type="hidden" name="action" value="restore">
+                                                <input type="hidden" name="id" value="<?= (int)$link['id'] ?>">
+                                                <button type="submit" class="btn btn-sm">Restore</button>
                                             </form>
                                         </td>
                                     </tr>

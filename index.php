@@ -36,10 +36,10 @@ if ($host !== '') {
 $link = null;
 if ($slug !== '') {
     if ($domainId !== null) {
-        $stmt = $db->prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 AND domain_id = ?");
+        $stmt = $db->prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 AND is_deleted = 0 AND domain_id = ?");
         $stmt->execute([$slug, $domainId]);
     } else {
-        $stmt = $db->prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 AND domain_id IS NULL");
+        $stmt = $db->prepare("SELECT * FROM links WHERE slug = ? AND is_active = 1 AND is_deleted = 0 AND domain_id IS NULL");
         $stmt->execute([$slug]);
     }
     $link = $stmt->fetch() ?: null;

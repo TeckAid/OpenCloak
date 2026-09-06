@@ -17,7 +17,7 @@
 function effective_rules(PDO $db, array $link): ?array
 {
     if (!empty($link['campaign_id'])) {
-        $stmt = $db->prepare("SELECT * FROM campaigns WHERE id = ? AND user_id = ?");
+        $stmt = $db->prepare("SELECT * FROM campaigns WHERE id = ? AND user_id = ? AND is_deleted = 0");
         $stmt->execute([(int)$link['campaign_id'], (int)$link['user_id']]);
         $campaign = $stmt->fetch();
         if (!$campaign || empty($campaign['is_active'])) {
@@ -221,6 +221,49 @@ const CLIENT_TYPES = [
 const IN_APP_CLIENTS = [
     'facebook', 'instagram', 'threads', 'tiktok', 'twitter', 'linkedin',
     'line', 'kakaotalk', 'wechat', 'telegram', 'snapchat',
+];
+
+/**
+ * Reference dictionaries for the API (valid rule values + labels).
+ */
+const REFERENCE_DICTIONARIES = [
+    'countries' => [
+        'US' => 'United States', 'CA' => 'Canada', 'GB' => 'United Kingdom', 'AU' => 'Australia',
+        'DE' => 'Germany', 'FR' => 'France', 'IT' => 'Italy', 'ES' => 'Spain',
+        'NL' => 'Netherlands', 'SE' => 'Sweden', 'NO' => 'Norway', 'DK' => 'Denmark',
+        'FI' => 'Finland', 'IE' => 'Ireland', 'PT' => 'Portugal', 'AT' => 'Austria',
+        'CH' => 'Switzerland', 'BE' => 'Belgium', 'PL' => 'Poland', 'CZ' => 'Czechia',
+        'RO' => 'Romania', 'HU' => 'Hungary', 'GR' => 'Greece', 'TR' => 'Türkiye',
+        'IL' => 'Israel', 'AE' => 'United Arab Emirates', 'SA' => 'Saudi Arabia',
+        'KW' => 'Kuwait', 'QA' => 'Qatar', 'BH' => 'Bahrain', 'OM' => 'Oman',
+        'IN' => 'India', 'ID' => 'Indonesia', 'TH' => 'Thailand', 'PH' => 'Philippines',
+        'MY' => 'Malaysia', 'SG' => 'Singapore', 'VN' => 'Vietnam', 'JP' => 'Japan',
+        'KR' => 'South Korea', 'CN' => 'China', 'HK' => 'Hong Kong', 'TW' => 'Taiwan',
+        'NZ' => 'New Zealand', 'BR' => 'Brazil', 'MX' => 'Mexico', 'AR' => 'Argentina',
+        'CL' => 'Chile', 'CO' => 'Colombia', 'PE' => 'Peru', 'ZA' => 'South Africa',
+        'NG' => 'Nigeria', 'KE' => 'Kenya', 'EG' => 'Egypt', 'MA' => 'Morocco',
+        'RU' => 'Russia', 'UA' => 'Ukraine', 'KZ' => 'Kazakhstan',
+    ],
+    'devices' => DEVICE_TYPES,
+    'os' => [
+        'Windows' => 'Windows', 'macOS' => 'macOS', 'iOS' => 'iOS', 'Android' => 'Android',
+        'Linux' => 'Linux', 'Chrome OS' => 'Chrome OS', 'Tizen' => 'Tizen',
+    ],
+    'browsers' => [
+        'chrome' => 'Chrome', 'safari' => 'Safari', 'firefox' => 'Firefox',
+        'edge' => 'Edge', 'opera' => 'Opera', 'samsung' => 'Samsung Internet',
+        'uc' => 'UC Browser', 'brave' => 'Brave',
+    ],
+    'clients' => CLIENT_TYPES,
+    'languages' => [
+        'en' => 'English', 'es' => 'Spanish', 'de' => 'German', 'fr' => 'French',
+        'it' => 'Italian', 'pt' => 'Portuguese', 'nl' => 'Dutch', 'sv' => 'Swedish',
+        'no' => 'Norwegian', 'da' => 'Danish', 'fi' => 'Finnish', 'pl' => 'Polish',
+        'cs' => 'Czech', 'ro' => 'Romanian', 'hu' => 'Hungarian', 'el' => 'Greek',
+        'tr' => 'Turkish', 'ru' => 'Russian', 'uk' => 'Ukrainian', 'ar' => 'Arabic',
+        'he' => 'Hebrew', 'hi' => 'Hindi', 'id' => 'Indonesian', 'th' => 'Thai',
+        'vi' => 'Vietnamese', 'zh' => 'Chinese', 'ja' => 'Japanese', 'ko' => 'Korean',
+    ],
 ];
 
 const RULE_COLUMNS = [
@@ -592,28 +635,59 @@ function owned_row(PDO $db, string $table, int $id, int $userId): ?array
 
 function delete_campaign_safely(PDO $db, int $userId, int $campaignId): ?string
 {
-    return delete_owned_row_without_references(
-        $db,
-        'campaigns',
-        'campaign_id',
-        $userId,
-        $campaignId,
-        'Campaign is still assigned to one or more links.',
-        'Campaign could not be deleted safely while related links are being updated. Please retry.'
-    );
+    $db->prepare("UPDATE campaigns SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ? AND is_deleted = 0")
+       ->execute([$campaignId, $userId]);
+
+    return null;
 }
 
 function delete_domain_safely(PDO $db, int $userId, int $domainId): ?string
 {
-    return delete_owned_row_without_references(
-        $db,
-        'domains',
-        'domain_id',
-        $userId,
-        $domainId,
-        'Domain is still assigned to one or more links. Reassign those links first.',
-        'Domain could not be deleted safely while related links are being updated. Please retry.'
-    );
+    $db->prepare("UPDATE domains SET is_deleted = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ? AND is_deleted = 0")
+       ->execute([$domainId, $userId]);
+
+    return null;
+}
+
+/**
+ * Resolve the current DNS status of a custom domain and persist it.
+ *
+ * @return array{status:string, records:list<string>, checked_at:string}
+ */
+function refresh_domain_status(PDO $db, array $domain): array
+{
+    $host = (string)$domain['domain'];
+    $records = [];
+
+    if (function_exists('dns_get_record')) {
+        foreach ([DNS_A => 'A', DNS_AAAA => 'AAAA'] as $flag => $type) {
+            $resolved = @dns_get_record($host, $flag);
+            if (is_array($resolved)) {
+                foreach ($resolved as $entry) {
+                    $value = $type === 'A' ? ($entry['ip'] ?? '') : ($entry['ipv6'] ?? '');
+                    if ($value !== '' && !in_array($value, $records, true)) {
+                        $records[] = $value;
+                    }
+                }
+            }
+        }
+    }
+    if ($records === [] && function_exists('gethostbyname')) {
+        $ip = @gethostbyname($host);
+        if ($ip !== $host && filter_var($ip, FILTER_VALIDATE_IP)) {
+            $records[] = $ip;
+        }
+    }
+
+    $status = $records === [] ? 'not_connected' : 'connected';
+    $db->prepare("UPDATE domains SET dns_status = ?, dns_records = ?, status_checked_at = CURRENT_TIMESTAMP WHERE id = ?")
+       ->execute([$status, implode(',', $records), (int)$domain['id']]);
+
+    return [
+        'status' => $status,
+        'records' => $records,
+        'checked_at' => gmdate('Y-m-d\TH:i:s\Z'),
+    ];
 }
 
 function referenced_link_count(PDO $db, string $column, int $userId, int $id): int

@@ -70,6 +70,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $messageType = 'success';
             }
         }
+    } elseif ($action === 'restore') {
+        $id = (int)($_POST['id'] ?? 0);
+        $db->prepare("UPDATE campaigns SET is_deleted = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?")->execute([$id, $userId]);
+        $message = 'Campaign restored.';
+        $messageType = 'success';
     } elseif ($action === 'clone') {
         $id = (int)($_POST['id'] ?? 0);
         $stmt = $db->prepare("SELECT * FROM campaigns WHERE id = ? AND user_id = ?");
@@ -99,7 +104,7 @@ if (isset($_GET['edit'])) {
 $r = $editing ?: ['is_active' => 0, 'allow_empty_referer' => 0, 'block_review_infra' => 0];
 
 // ---- List --------------------------------------------------------------------------
-$stmt = $db->prepare("SELECT * FROM campaigns WHERE user_id = ? ORDER BY is_active DESC, created_at DESC");
+$stmt = $db->prepare("SELECT * FROM campaigns WHERE user_id = ? AND is_deleted = 0 ORDER BY is_active DESC, created_at DESC");
 $stmt->execute([$userId]);
 $campaigns = $stmt->fetchAll();
 
@@ -125,6 +130,10 @@ foreach ($stmt->fetchAll() as $row) {
 
 $activeCampaigns = array_values(array_filter($campaigns, static fn(array $c): bool => (int)$c['is_active'] === 1));
 $pausedCampaigns = array_values(array_filter($campaigns, static fn(array $c): bool => (int)$c['is_active'] !== 1));
+
+$stmt = $db->prepare("SELECT * FROM campaigns WHERE user_id = ? AND is_deleted = 1 ORDER BY updated_at DESC");
+$stmt->execute([$userId]);
+$deletedCampaigns = $stmt->fetchAll();
 
 $activeNav = '/admin/campaigns.php';
 ?>
@@ -245,6 +254,38 @@ $activeNav = '/admin/campaigns.php';
                                                 <input type="hidden" name="action" value="delete">
                                                 <input type="hidden" name="id" value="<?= (int)$c['id'] ?>">
                                                 <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+                                            </form>
+                                        </td>
+                                    </tr>
+                                <?php endforeach; ?>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            <?php endif; ?>
+
+            <?php if ($deletedCampaigns !== []): ?>
+                <div class="section-title">
+                    <h2>Deleted</h2>
+                    <span class="count"><?= count($deletedCampaigns) ?></span>
+                </div>
+                <div class="card">
+                    <div class="table-responsive">
+                        <table class="table">
+                            <thead>
+                                <tr><th>Campaign</th><th>Hits</th><th>Actions</th></tr>
+                            </thead>
+                            <tbody>
+                                <?php foreach ($deletedCampaigns as $c): ?>
+                                    <tr class="row-inactive">
+                                        <td><?= htmlspecialchars($c['name']) ?></td>
+                                        <td><?= number_format((int)$c['total_hits']) ?></td>
+                                        <td>
+                                            <form method="POST" action="" style="display:inline">
+                                                <?= csrf_field() ?>
+                                                <input type="hidden" name="action" value="restore">
+                                                <input type="hidden" name="id" value="<?= (int)$c['id'] ?>">
+                                                <button type="submit" class="btn btn-sm">Restore</button>
                                             </form>
                                         </td>
                                     </tr>

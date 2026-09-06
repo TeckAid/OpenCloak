@@ -98,6 +98,17 @@ function get_database_migrations(): array
                 $db->exec('DROP TABLE IF EXISTS filter_lists');
             },
         ],
+        6 => [
+            'file' => $dir . DIRECTORY_SEPARATOR . '006_soft_delete_and_domain_status.sql',
+            'down' => static function (PDO $db): void {
+                foreach (['links', 'campaigns'] as $table) {
+                    $db->exec("ALTER TABLE {$table} DROP COLUMN is_deleted");
+                }
+                foreach (['is_deleted', 'dns_status', 'dns_records', 'status_checked_at'] as $col) {
+                    $db->exec("ALTER TABLE domains DROP COLUMN {$col}");
+                }
+            },
+        ],
     ];
 }
 
