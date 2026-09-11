@@ -52,7 +52,9 @@ define('SYSTEM_HOSTS', ['127.0.0.1']);
 define('TRUSTED_PROXIES', ['172.23.0.2/32']);
 define('IP_INTELLIGENCE_FAILURE_MODE', 'closed');
 PHP
-chmod 0600 "${config_path}"
+# The container process (www-data) must be able to read the deployment
+# configuration, matching production permissions for the live config.
+chmod 0644 "${config_path}"
 
 (
     cd "${repo_dir}"
