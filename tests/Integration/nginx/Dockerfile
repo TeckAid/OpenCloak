@@ -8,7 +8,10 @@ FROM ${PHP_FPM_IMAGE}
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl nginx \
     && rm -rf /var/lib/apt/lists/* \
-    && docker-php-ext-install pdo_sqlite opcache \
+    # pdo_sqlite and opcache ship compiled in the official image; fail early
+    # if a future base image drops them.
+    && php -m | grep -qx pdo_sqlite \
+    && php -m | grep -qx 'Zend OPcache' \
     && rm -f /etc/nginx/sites-enabled/default /etc/nginx/conf.d/default.conf
 
 WORKDIR /var/www/html
