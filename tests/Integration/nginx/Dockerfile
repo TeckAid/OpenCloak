@@ -31,7 +31,8 @@ RUN sed -i "s|root /path/to/Cloaking;|root /var/www/html;|" /etc/nginx/conf.d/de
         "define('SYSTEM_HOSTS', ['localhost', '127.0.0.1']);" \
         > /var/www/html/config.local.php \
     && install -d -o 33 -g 33 -m 0770 /var/www/html/data /var/www/html/logs /var/www/html/docs /var/www/html/docker \
-    && php /var/www/html/bin/migrate.php \
+    && php /var/www/html/bin/migrate.php --db=/var/www/html/data/cloaking.sqlite \
+    && chown -R 33:33 /var/www/html/data /var/www/html/logs \
     && printf 'ok\n' > /var/www/html/healthz \
     && printf 'readme sentinel\n' > /var/www/html/README.md \
     && printf 'review sentinel\n' > /var/www/html/CODE_REVIEW.md \

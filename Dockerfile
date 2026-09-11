@@ -36,6 +36,11 @@ RUN printf 'ok\n' > /var/www/html/healthz \
         'set -eu' \
         'install -d -o 33 -g 33 -m 0770 /srv/cloaking/runtime /srv/cloaking/runtime/logs' \
         'chown 33:33 /srv/cloaking/runtime /srv/cloaking/runtime/logs' \
+        'if [ "$(id -u)" = "0" ]; then' \
+        '    setpriv --reuid=33 --regid=33 --clear-groups php /var/www/html/bin/migrate.php >&2' \
+        'else' \
+        '    php /var/www/html/bin/migrate.php >&2' \
+        'fi' \
         'exec docker-php-entrypoint apache2-foreground' \
         > /usr/local/bin/cloaking-entrypoint \
     && chmod 755 /usr/local/bin/cloaking-entrypoint

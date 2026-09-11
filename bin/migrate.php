@@ -9,6 +9,11 @@ $options = getopt('', ['db::', 'backup-manifest::', 'app-key::', 'max-backup-age
 if (!defined('DB_PATH') && isset($options['db']) && is_string($options['db']) && $options['db'] !== '') {
     define('DB_PATH', $options['db']);
 }
+// Fall back to the deployment configuration (config.local.php) when no
+// explicit --db is given, so in-container runs use the app's real database.
+if (!defined('DB_PATH') && is_file(dirname(__DIR__) . '/config.local.php')) {
+    require dirname(__DIR__) . '/config.local.php';
+}
 if (!defined('DB_PATH')) {
     define('DB_PATH', dirname(__DIR__) . '/cloaking-runtime/cloaking.sqlite');
 }
