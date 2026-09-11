@@ -132,7 +132,7 @@ jobs:
         run: docker build --pull --no-cache --file Dockerfile --tag cloaking-scan:${{ github.sha }} .
 
       - name: Generate SBOM
-        uses: anchore/sbom-action@f8bdd1d8ac5e901a77a92f111440fdb1b593736b # v0.20.6
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: cloaking-scan:${{ github.sha }}
           format: spdx-json
@@ -227,7 +227,7 @@ jobs:
         run: mkdir -p "${RELEASE_ARTIFACT_DIR}"
 
       - name: Generate release SBOM
-        uses: anchore/sbom-action@f8bdd1d8ac5e901a77a92f111440fdb1b593736b # v0.20.6
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
         with:
           image: ${{ steps.image.outputs.release_ref }}@${{ steps.release_image.outputs.digest }}
           format: spdx-json
