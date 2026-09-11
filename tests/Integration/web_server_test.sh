@@ -123,7 +123,7 @@ assert_php_executes() {
     exit 1
   fi
 
-  if ! grep -q 'Sign In' "${body_file}"; then
+  if ! grep -q 'name="_csrf"' "${body_file}"; then
     echo "${label}: ${url} did not render the expected login page" >&2
     cat "${body_file}" >&2
     rm -f "${body_file}"
