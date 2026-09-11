@@ -160,7 +160,6 @@ jobs:
       packages: write
     env:
       LEGAL_APPROVAL_ATTESTATION: ${{ secrets.LEGAL_APPROVAL_ATTESTATION }}
-      RELEASE_ARTIFACT_DIR: ${{ runner.temp }}/release-artifacts
 
     steps:
       - name: Checkout
@@ -168,6 +167,12 @@ jobs:
         with:
           clean: true
           fetch-depth: 0
+
+      - name: Prepare release artifact directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "RELEASE_ARTIFACT_DIR=${RUNNER_TEMP}/release-artifacts" >> "$GITHUB_ENV"
 
       - name: Verify clean checkout
         shell: bash
