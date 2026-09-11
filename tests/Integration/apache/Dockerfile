@@ -41,8 +41,6 @@ RUN printf '%s\n' \
     && printf 'caddy sentinel\n' > /var/www/html/docker/Caddyfile \
     && printf 'doc sentinel\n' > /var/www/html/docs/internal.md \
     && printf 'log sentinel\n' > /var/www/html/logs/app.log \
-    && cp /var/www/html/data/cloaking.sqlite /var/www/html/data/cloaking.sqlite-wal \
-    && cp /var/www/html/data/cloaking.sqlite /var/www/html/data/cloaking.sqlite-shm \
     && find /var/www/html -mindepth 1 -maxdepth 1 ! -name data ! -name logs -exec chown -R root:root {} +
 
 EXPOSE 80

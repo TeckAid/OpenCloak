@@ -25,7 +25,12 @@ cleanup() {
     )
   fi
   if [[ -n "${ACTIVE_COMPOSE_RUNTIME}" ]]; then
-    rm -rf "${ACTIVE_COMPOSE_RUNTIME}"
+    # The container entrypoint chowns the runtime mount to www-data, so the
+    # invoking user may no longer be able to remove it. Fall back to sudo
+    # when available (CI runners provide passwordless sudo).
+    rm -rf "${ACTIVE_COMPOSE_RUNTIME}" 2>/dev/null \
+      || sudo rm -rf "${ACTIVE_COMPOSE_RUNTIME}" 2>/dev/null \
+      || true
   fi
 }
 trap cleanup EXIT
