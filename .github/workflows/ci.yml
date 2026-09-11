@@ -138,6 +138,10 @@ jobs:
           format: spdx-json
           output-file: ci-sbom.spdx.json
           artifact-name: ci-sbom
+          # CI gate only: never attach to a GitHub Release. The token is
+          # contents:read, so a tag push would otherwise 403 here and skip the
+          # Trivy scan below. Release assets belong to release_provenance.
+          upload-release-assets: false
 
       - name: Scan image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -238,6 +242,9 @@ jobs:
           format: spdx-json
           output-file: ${{ env.RELEASE_ARTIFACT_DIR }}/sbom.spdx.json
           artifact-name: release-sbom
+          # The SBOM ships as a workflow artifact and is referenced by
+          # release-metadata.json; attaching a release asset needs contents:write.
+          upload-release-assets: false
 
       - name: Write release metadata
         shell: bash
