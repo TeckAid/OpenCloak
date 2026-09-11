@@ -6,7 +6,10 @@ ARG PHP_FPM_IMAGE=docker.io/library/php:8.4-fpm-bookworm@sha256:075b11566518bfa9
 FROM ${PHP_FPM_IMAGE}
 
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends curl nginx \
+    && apt-get purge -y linux-libc-dev \
+    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* \
     # pdo_sqlite and opcache ship compiled in the official image; fail early
     # if a future base image drops them.

@@ -6,7 +6,10 @@ ARG PHP_APACHE_IMAGE=docker.io/library/php:8.4-apache-bookworm@sha256:25d70665ac
 FROM ${PHP_APACHE_IMAGE}
 
 RUN apt-get update \
+    && apt-get upgrade -y \
     && apt-get install -y --no-install-recommends curl \
+    && apt-get purge -y linux-libc-dev \
+    && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* \
     && a2enmod rewrite expires headers \
     && sed -ri 's/AllowOverride None/AllowOverride All/g' /etc/apache2/apache2.conf \
