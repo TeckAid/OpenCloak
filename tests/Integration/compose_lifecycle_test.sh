@@ -58,6 +58,28 @@ chmod 0600 "${config_path}"
     cd "${repo_dir}"
     CLOAKING_RUNTIME_PATH="${runtime_dir}" CLOAKING_CONFIG_PATH="${config_path}" \
         docker compose -p "${project}" up -d --build web
+
+    # Wait for the container to be running and healthy; surface logs on failure.
+    web_ready="0"
+    for _ in $(seq 1 30); do
+        state="$(CLOAKING_RUNTIME_PATH="${runtime_dir}" CLOAKING_CONFIG_PATH="${config_path}" \
+            docker compose -p "${project}" ps --format json web 2>/dev/null || true)"
+        if printf '%s' "${state}" | grep -q '"Health":"healthy"'; then
+            web_ready="1"
+            break
+        fi
+        if printf '%s' "${state}" | grep -q '"State":"exited"'; then
+            break
+        fi
+        sleep 2
+    done
+    if [[ "${web_ready}" != "1" ]]; then
+        echo "Lifecycle web container did not become healthy; logs follow." >&2
+        CLOAKING_RUNTIME_PATH="${runtime_dir}" CLOAKING_CONFIG_PATH="${config_path}" \
+            docker compose -p "${project}" logs --tail=80 web >&2 || true
+        exit 1
+    fi
+
     CLOAKING_RUNTIME_PATH="${runtime_dir}" CLOAKING_CONFIG_PATH="${config_path}" \
         docker compose -p "${project}" exec -T web php bin/migrate.php --db=/srv/cloaking/runtime/cloaking.sqlite
     printf '%s\n' 'LifecycleStrong123!' | \
