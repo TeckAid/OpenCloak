@@ -11,6 +11,7 @@ if ! command -v docker >/dev/null 2>&1 || ! docker info >/dev/null 2>&1; then
 fi
 
 work_dir="$(mktemp -d "${TMPDIR:-/tmp}/cloaking-compose-lifecycle.XXXXXX")"
+migration_target="$(basename "$(ls "${repo_dir}"/migrations/*.sql | sort | tail -1)" | cut -d_ -f1 | sed 's/^0*//')"
 runtime_dir="${work_dir}/runtime"
 backup_dir="${work_dir}/backup"
 evidence_dir="${work_dir}/evidence"
@@ -87,7 +88,7 @@ docker run --rm --entrypoint bash \
       --app-key=/srv/cloaking/runtime/app.key \
       --config=/var/www/html/config.local.php \
       --output=/backup \
-      --migration-target=3 \
+      --migration-target="${migration_target}" \
       --source-commit="${source_commit}" \
       --image-digest="${image_id}"
 
