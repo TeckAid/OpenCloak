@@ -45,4 +45,6 @@ RUN sed -i "s|root /path/to/Cloaking;|root /var/www/html;|" /etc/nginx/conf.d/de
     && printf 'log sentinel\n' > /var/www/html/logs/app.log \
     && find /var/www/html -mindepth 1 -maxdepth 1 ! -name data ! -name logs -exec chown -R root:root {} +
 
+EXPOSE 80
+
 CMD ["sh", "-c", "php-fpm -D && exec nginx -g 'daemon off;'"]

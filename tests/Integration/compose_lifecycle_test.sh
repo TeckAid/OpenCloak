@@ -33,7 +33,11 @@ cleanup() {
             --reference=/cleanup -R /cleanup >/dev/null 2>&1 || true
     fi
     chmod -R u+rwX "${work_dir}" >/dev/null 2>&1 || true
-    rm -rf "${work_dir}"
+    # The container entrypoint chowns the runtime mount to www-data; the
+    # invoking user may need sudo to remove it (CI runners provide it).
+    rm -rf "${work_dir}" 2>/dev/null \
+      || sudo rm -rf "${work_dir}" 2>/dev/null \
+      || true
 }
 trap cleanup EXIT
 
